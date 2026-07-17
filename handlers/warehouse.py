@@ -1,0 +1,224 @@
+import logging
+
+from aiogram import F, Router
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import CallbackQuery, Message
+
+from database.db import (
+    get_warehouse_items,
+    replenish_stock,
+    sell_item,
+    delete_size,
+    update_price,
+)
+from keyboards.menus import (
+    back_inline_keyboard,
+    cancel_inline_keyboard,
+    main_menu_keyboard,
+    warehouse_keyboard,
+)
+from states.purchase import ReplenishStates
+from utils.formatters import format_warehouse
+
+logger = logging.getLogger(__name__)
+router = Router()
+
+# === СОСТОЯНИЕ ДЛЯ ИЗМЕНЕНИЯ ЦЕНЫ ===
+class EditPriceStates(StatesGroup):
+    waiting_for_new_price = State()
+
+
+async def _render_warehouse_message(items: list[dict]) -> tuple[str, object]:
+    text = format_warehouse(items)
+    keyboard = warehouse_keyboard(items) if items else back_inline_keyboard()
+    return text, keyboard
+
+
+@router.message(F.text == "📦 Склад")
+async def show_warehouse(message: Message) -> None:
+    try:
+        items = await get_warehouse_items()
+        text, keyboard = await _render_warehouse_message(items)
+        await message.answer(text, reply_markup=keyboard, parse_mode="HTML")
+    except Exception as exc:
+        logger.exception("Ошибка раздела склад: %s", exc)
+        await message.answer("⚠️ Не удалось загрузить склад.")
+
+
+@router.callback_query(F.data.startswith("sell:"))
+async def process_sell(callback: CallbackQuery) -> None:
+    try:
+        _, item_id_str, size = callback.data.split(":", 2)
+        success, msg = await sell_item(int(item_id_str), size)
+
+        if not success:
+            await callback.answer(msg, show_alert=True)
+            return
+
+        items = await get_warehouse_items()
+        text, keyboard = await _render_warehouse_message(items)
+        await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+        await callback.answer("✅ Продажа зафиксирована")
+    except Exception as exc:
+        logger.exception("Ошибка продажи: %s", exc)
+        await callback.answer("⚠️ Ошибка при продаже", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("replenish:"))
+async def start_replenish(callback: CallbackQuery, state: FSMContext) -> None:
+    try:
+        _, item_id_str, size = callback.data.split(":", 2)
+        await state.set_state(ReplenishStates.quantity)
+        await state.update_data(item_id=int(item_id_str), size=size)
+        await callback.answer()
+        await callback.message.answer(
+            f"➕ <b>Пополнение</b>\n\n"
+            f"Размер: <b>{size}</b>\n"
+            "Введите количество для добавления:",
+            reply_markup=cancel_inline_keyboard(),
+            parse_mode="HTML",
+        )
+    except Exception as exc:
+        logger.exception("Ошибка начала пополнения: %s", exc)
+        await callback.answer("⚠️ Ошибка", show_alert=True)
+
+
+@router.message(ReplenishStates.quantity)
+async def process_replenish(message: Message, state: FSMContext) -> None:
+    try:
+        text = (message.text or "").strip()
+        if not text.isdigit() or int(text) <= 0:
+            await message.answer(
+                "⚠️ Введите целое положительное число:",
+                reply_markup=cancel_inline_keyboard(),
+            )
+            return
+
+        data = await state.get_data()
+        item_id = data.get("item_id")
+        size = data.get("size")
+        if not item_id or not size:
+            await state.clear()
+            await message.answer(
+                "⚠️ Сессия пополнения устарела. Откройте склад заново.",
+                reply_markup=main_menu_keyboard(),
+            )
+            return
+
+        success, msg = await replenish_stock(item_id, size, int(text))
+        await state.clear()
+
+        if not success:
+            await message.answer(f"⚠️ {msg}", reply_markup=main_menu_keyboard())
+            return
+
+        items = await get_warehouse_items()
+        warehouse_text, keyboard = await _render_warehouse_message(items)
+        await message.answer(
+            f"✅ {msg}\n\n{warehouse_text}",
+            reply_markup=keyboard,
+            parse_mode="HTML",
+        )
+    except Exception as exc:
+        logger.exception("Ошибка пополнения: %s", exc)
+        await state.clear()
+        await message.answer(
+            "⚠️ Не удалось пополнить остаток.",
+            reply_markup=main_menu_keyboard(),
+        )
+
+
+# ===================================================
+# === ОБРАБОТЧИКИ: УДАЛЕНИЕ И ИЗМЕНЕНИЕ ЦЕНЫ ===
+# ===================================================
+
+@router.callback_query(F.data.startswith("delete:"))
+async def delete_size_callback(callback: CallbackQuery) -> None:
+    try:
+        print(f"🔍 delete_size_callback: начат, data={callback.data}")
+        _, item_id_str, size = callback.data.split(":", 2)
+        item_id = int(item_id_str)
+        print(f"🔍 Парсинг: item_id={item_id}, size={size}")
+
+        success, msg = await delete_size(item_id, size)
+        print(f"🔍 delete_size вернул: success={success}, msg={msg}")
+
+        if not success:
+            await callback.answer(msg, show_alert=True)
+            return
+
+        items = await get_warehouse_items()
+        text, keyboard = await _render_warehouse_message(items)
+        await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+        await callback.answer(f"✅ {msg}")
+        print("✅ Удаление успешно завершено")
+    except Exception as exc:
+        print(f"❌ ОШИБКА в delete_size_callback: {exc}")
+        logger.exception("Ошибка удаления размера: %s", exc)
+        await callback.answer("⚠️ Не удалось удалить размер", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("edit_price:"))
+async def edit_price_callback(callback: CallbackQuery, state: FSMContext) -> None:
+    try:
+        _, item_id_str = callback.data.split(":", 1)
+        item_id = int(item_id_str)
+        await state.update_data(item_id=item_id)
+        await state.set_state(EditPriceStates.waiting_for_new_price)
+        await callback.answer()
+        await callback.message.answer(
+            "✏️ Введите новую цену продажи (только число, например 2500):",
+            reply_markup=cancel_inline_keyboard(),
+        )
+    except Exception as exc:
+        logger.exception("Ошибка начала изменения цены: %s", exc)
+        await callback.answer("⚠️ Ошибка", show_alert=True)
+
+
+@router.message(EditPriceStates.waiting_for_new_price)
+async def process_new_price(message: Message, state: FSMContext) -> None:
+    try:
+        text = (message.text or "").strip()
+        try:
+            new_price = float(text)
+            if new_price < 0:
+                raise ValueError
+        except ValueError:
+            await message.answer(
+                "⚠️ Введите положительное число (например, 1500):",
+                reply_markup=cancel_inline_keyboard(),
+            )
+            return
+
+        data = await state.get_data()
+        item_id = data.get("item_id")
+        if not item_id:
+            await state.clear()
+            await message.answer(
+                "⚠️ Сессия устарела. Откройте склад заново.",
+                reply_markup=main_menu_keyboard(),
+            )
+            return
+
+        success, msg = await update_price(item_id, new_price)
+        await state.clear()
+
+        if not success:
+            await message.answer(f"⚠️ {msg}", reply_markup=main_menu_keyboard())
+            return
+
+        items = await get_warehouse_items()
+        warehouse_text, keyboard = await _render_warehouse_message(items)
+        await message.answer(
+            f"✅ {msg}\n\n{warehouse_text}",
+            reply_markup=keyboard,
+            parse_mode="HTML",
+        )
+    except Exception as exc:
+        logger.exception("Ошибка обновления цены: %s", exc)
+        await state.clear()
+        await message.answer(
+            "⚠️ Не удалось обновить цену.",
+            reply_markup=main_menu_keyboard(),
+        )

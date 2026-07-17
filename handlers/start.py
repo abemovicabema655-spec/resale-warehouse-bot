@@ -1,72 +1,24 @@
-import logging
-
 from aiogram import F, Router
-from aiogram.filters import CommandStart
-from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.filters import Command
+from aiogram.types import Message
 
-from database.db import get_dashboard_stats
-from keyboards.menus import back_inline_keyboard, main_menu_keyboard
-from utils.formatters import format_dashboard
+from database.db import register_user
+from keyboards.menus import main_menu_keyboard
 
-logger = logging.getLogger(__name__)
 router = Router()
 
+@router.message(Command("start"))
+async def start(message: Message) -> None:
+    user_id = message.from_user.id
+    username = message.from_user.username or "Нет юзернейма"
+    first_name = message.from_user.first_name or ""
+    last_name = message.from_user.last_name or ""
 
-@router.message(CommandStart())
-async def cmd_start(message: Message) -> None:
-    try:
-        stats = await get_dashboard_stats()
-        await message.answer(
-            "👋 Добро пожаловать в бот складского учёта!\n\n"
-            + format_dashboard(stats),
-            reply_markup=main_menu_keyboard(),
-            parse_mode="HTML",
-        )
-    except Exception as exc:
-        logger.exception("Ошибка в /start: %s", exc)
-        await message.answer(
-            "⚠️ Произошла ошибка при запуске. Попробуйте позже.",
-            reply_markup=main_menu_keyboard(),
-        )
+    await register_user(user_id, username, first_name, last_name)
 
-
-@router.message(F.text == "📦 Главный экран")
-async def show_dashboard(message: Message) -> None:
-    try:
-        stats = await get_dashboard_stats()
-        await message.answer(
-            format_dashboard(stats),
-            reply_markup=back_inline_keyboard(),
-            parse_mode="HTML",
-        )
-    except Exception as exc:
-        logger.exception("Ошибка главного экрана: %s", exc)
-        await message.answer("⚠️ Не удалось загрузить данные главного экрана.")
-
-
-@router.callback_query(F.data == "back:menu")
-async def back_to_menu(callback: CallbackQuery, state: FSMContext) -> None:
-    try:
-        await state.clear()
-        await callback.answer()
-        stats = await get_dashboard_stats()
-        text = "🏠 <b>Главное меню</b>\n\n" + format_dashboard(stats)
-
-        try:
-            await callback.message.edit_text(
-                text,
-                reply_markup=None,
-                parse_mode="HTML",
-            )
-        except Exception:
-            pass
-
-        await callback.message.answer(
-            text,
-            reply_markup=main_menu_keyboard(),
-            parse_mode="HTML",
-        )
-    except Exception as exc:
-        logger.exception("Ошибка возврата в меню: %s", exc)
-        await callback.answer("⚠️ Ошибка", show_alert=True)
+    await message.answer(
+        "👋 Привет! Я бот для учёта склада (ресейл).\n"
+        "Твои данные сохраняются только для тебя.\n\n"
+        "Выбери действие в меню:",
+        reply_markup=main_menu_keyboard(),
+    )

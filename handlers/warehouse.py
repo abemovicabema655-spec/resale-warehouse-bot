@@ -24,7 +24,6 @@ from utils.formatters import format_warehouse
 logger = logging.getLogger(__name__)
 router = Router()
 
-# === СОСТОЯНИЕ ДЛЯ ИЗМЕНЕНИЯ ЦЕНЫ ===
 class EditPriceStates(StatesGroup):
     waiting_for_new_price = State()
 
@@ -38,7 +37,8 @@ async def _render_warehouse_message(items: list[dict]) -> tuple[str, object]:
 @router.message(F.text == "📦 Склад")
 async def show_warehouse(message: Message) -> None:
     try:
-        items = await get_warehouse_items()
+        user_id = message.from_user.id
+        items = await get_warehouse_items(user_id)
         text, keyboard = await _render_warehouse_message(items)
         await message.answer(text, reply_markup=keyboard, parse_mode="HTML")
     except Exception as exc:
@@ -49,14 +49,15 @@ async def show_warehouse(message: Message) -> None:
 @router.callback_query(F.data.startswith("sell:"))
 async def process_sell(callback: CallbackQuery) -> None:
     try:
+        user_id = callback.from_user.id
         _, item_id_str, size = callback.data.split(":", 2)
-        success, msg = await sell_item(int(item_id_str), size)
+        success, msg = await sell_item(user_id, int(item_id_str), size)
 
         if not success:
             await callback.answer(msg, show_alert=True)
             return
 
-        items = await get_warehouse_items()
+        items = await get_warehouse_items(user_id)
         text, keyboard = await _render_warehouse_message(items)
         await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
         await callback.answer("✅ Продажа зафиксирована")
@@ -68,9 +69,10 @@ async def process_sell(callback: CallbackQuery) -> None:
 @router.callback_query(F.data.startswith("replenish:"))
 async def start_replenish(callback: CallbackQuery, state: FSMContext) -> None:
     try:
+        user_id = callback.from_user.id
         _, item_id_str, size = callback.data.split(":", 2)
         await state.set_state(ReplenishStates.quantity)
-        await state.update_data(item_id=int(item_id_str), size=size)
+        await state.update_data(user_id=user_id, item_id=int(item_id_str), size=size)
         await callback.answer()
         await callback.message.answer(
             f"➕ <b>Пополнение</b>\n\n"
@@ -87,6 +89,7 @@ async def start_replenish(callback: CallbackQuery, state: FSMContext) -> None:
 @router.message(ReplenishStates.quantity)
 async def process_replenish(message: Message, state: FSMContext) -> None:
     try:
+        user_id = message.from_user.id
         text = (message.text or "").strip()
         if not text.isdigit() or int(text) <= 0:
             await message.answer(
@@ -106,14 +109,14 @@ async def process_replenish(message: Message, state: FSMContext) -> None:
             )
             return
 
-        success, msg = await replenish_stock(item_id, size, int(text))
+        success, msg = await replenish_stock(user_id, item_id, size, int(text))
         await state.clear()
 
         if not success:
             await message.answer(f"⚠️ {msg}", reply_markup=main_menu_keyboard())
             return
 
-        items = await get_warehouse_items()
+        items = await get_warehouse_items(user_id)
         warehouse_text, keyboard = await _render_warehouse_message(items)
         await message.answer(
             f"✅ {msg}\n\n{warehouse_text}",
@@ -129,32 +132,23 @@ async def process_replenish(message: Message, state: FSMContext) -> None:
         )
 
 
-# ===================================================
-# === ОБРАБОТЧИКИ: УДАЛЕНИЕ И ИЗМЕНЕНИЕ ЦЕНЫ ===
-# ===================================================
-
 @router.callback_query(F.data.startswith("delete:"))
 async def delete_size_callback(callback: CallbackQuery) -> None:
     try:
-        print(f"🔍 delete_size_callback: начат, data={callback.data}")
+        user_id = callback.from_user.id
         _, item_id_str, size = callback.data.split(":", 2)
         item_id = int(item_id_str)
-        print(f"🔍 Парсинг: item_id={item_id}, size={size}")
 
-        success, msg = await delete_size(item_id, size)
-        print(f"🔍 delete_size вернул: success={success}, msg={msg}")
-
+        success, msg = await delete_size(user_id, item_id, size)
         if not success:
             await callback.answer(msg, show_alert=True)
             return
 
-        items = await get_warehouse_items()
+        items = await get_warehouse_items(user_id)
         text, keyboard = await _render_warehouse_message(items)
         await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
         await callback.answer(f"✅ {msg}")
-        print("✅ Удаление успешно завершено")
     except Exception as exc:
-        print(f"❌ ОШИБКА в delete_size_callback: {exc}")
         logger.exception("Ошибка удаления размера: %s", exc)
         await callback.answer("⚠️ Не удалось удалить размер", show_alert=True)
 
@@ -162,9 +156,10 @@ async def delete_size_callback(callback: CallbackQuery) -> None:
 @router.callback_query(F.data.startswith("edit_price:"))
 async def edit_price_callback(callback: CallbackQuery, state: FSMContext) -> None:
     try:
+        user_id = callback.from_user.id
         _, item_id_str = callback.data.split(":", 1)
         item_id = int(item_id_str)
-        await state.update_data(item_id=item_id)
+        await state.update_data(user_id=user_id, item_id=item_id)
         await state.set_state(EditPriceStates.waiting_for_new_price)
         await callback.answer()
         await callback.message.answer(
@@ -179,6 +174,7 @@ async def edit_price_callback(callback: CallbackQuery, state: FSMContext) -> Non
 @router.message(EditPriceStates.waiting_for_new_price)
 async def process_new_price(message: Message, state: FSMContext) -> None:
     try:
+        user_id = message.from_user.id
         text = (message.text or "").strip()
         try:
             new_price = float(text)
@@ -201,14 +197,14 @@ async def process_new_price(message: Message, state: FSMContext) -> None:
             )
             return
 
-        success, msg = await update_price(item_id, new_price)
+        success, msg = await update_price(user_id, item_id, new_price)
         await state.clear()
 
         if not success:
             await message.answer(f"⚠️ {msg}", reply_markup=main_menu_keyboard())
             return
 
-        items = await get_warehouse_items()
+        items = await get_warehouse_items(user_id)
         warehouse_text, keyboard = await _render_warehouse_message(items)
         await message.answer(
             f"✅ {msg}\n\n{warehouse_text}",

@@ -1,5 +1,6 @@
 import logging
 from typing import Any
+from datetime import datetime
 
 import aiosqlite
 
@@ -14,6 +15,7 @@ async def init_db() -> None:
             """
             CREATE TABLE IF NOT EXISTS items (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
                 name TEXT NOT NULL,
                 category TEXT DEFAULT 'Общее',
                 purchase_price REAL,
@@ -38,16 +40,34 @@ async def init_db() -> None:
                 sold_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (item_id) REFERENCES items(id)
             );
+
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY,
+                username TEXT,
+                first_name TEXT,
+                last_name TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
             """
         )
-        # Индексы для ускорения запросов
         await db.execute("CREATE INDEX IF NOT EXISTS idx_stock_item_id ON stock (item_id);")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_sales_item_id ON sales (item_id);")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_items_name ON items (name);")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_items_user_id ON items (user_id);")
+        await db.commit()
+
+
+async def register_user(user_id: int, username: str = None, first_name: str = None, last_name: str = None) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT OR IGNORE INTO users (id, username, first_name, last_name) VALUES (?, ?, ?, ?)",
+            (user_id, username, first_name, last_name)
+        )
         await db.commit()
 
 
 async def add_purchase(
+    user_id: int,
     name: str,
     size: str,
     quantity: int,
@@ -58,8 +78,8 @@ async def add_purchase(
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
-            "SELECT id FROM items WHERE name = ? COLLATE NOCASE",
-            (name.strip(),),
+            "SELECT id FROM items WHERE user_id = ? AND name = ? COLLATE NOCASE",
+            (user_id, name.strip()),
         )
         row = await cursor.fetchone()
 
@@ -76,10 +96,10 @@ async def add_purchase(
         else:
             cursor = await db.execute(
                 """
-                INSERT INTO items (name, category, purchase_price, sale_price)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO items (user_id, name, category, purchase_price, sale_price)
+                VALUES (?, ?, ?, ?, ?)
                 """,
-                (name.strip(), category, purchase_price, sale_price),
+                (user_id, name.strip(), category, purchase_price, sale_price),
             )
             item_id = cursor.lastrowid
 
@@ -171,35 +191,22 @@ _WAREHOUSE_QUERY = """
 """
 
 
-async def get_warehouse_items() -> list[dict[str, Any]]:
-    async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        cursor = await db.execute(_WAREHOUSE_QUERY.format(where_clause=""))
-        rows = await cursor.fetchall()
-    return _group_warehouse_rows(rows)
-
-
-async def search_warehouse_items(query: str) -> list[dict[str, Any]]:
-    search = (query or "").strip()
-    if not search:
-        return await get_warehouse_items()
-
+async def get_warehouse_items(user_id: int) -> list[dict[str, Any]]:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
-            _WAREHOUSE_QUERY.format(where_clause="WHERE i.name LIKE ? COLLATE NOCASE"),
-            (f"%{search}%",),
+            _WAREHOUSE_QUERY.format(where_clause=f"WHERE i.user_id = {user_id}")
         )
         rows = await cursor.fetchall()
     return _group_warehouse_rows(rows)
 
 
-async def get_item_by_id(item_id: int) -> dict[str, Any] | None:
+async def get_item_by_id(user_id: int, item_id: int) -> dict[str, Any] | None:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
-            "SELECT id, name, purchase_price, sale_price FROM items WHERE id = ?",
-            (item_id,),
+            "SELECT id, name, purchase_price, sale_price FROM items WHERE id = ? AND user_id = ?",
+            (item_id, user_id),
         )
         row = await cursor.fetchone()
     if not row:
@@ -213,14 +220,18 @@ async def get_item_by_id(item_id: int) -> dict[str, Any] | None:
 
 
 async def update_item_prices(
+    user_id: int,
     item_id: int,
     purchase_price: float,
     sale_price: float,
 ) -> tuple[bool, str]:
     async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute("SELECT id FROM items WHERE id = ?", (item_id,))
+        cursor = await db.execute(
+            "SELECT id FROM items WHERE id = ? AND user_id = ?",
+            (item_id, user_id),
+        )
         if not await cursor.fetchone():
-            return False, "Товар не найден."
+            return False, "Товар не найден или доступ запрещён."
 
         await db.execute(
             "UPDATE items SET purchase_price = ?, sale_price = ? WHERE id = ?",
@@ -230,17 +241,22 @@ async def update_item_prices(
     return True, "Цены обновлены."
 
 
-async def delete_stock_size(item_id: int, size: str) -> tuple[bool, str]:
-    print(f"🔍 delete_stock_size: item_id={item_id}, size={size}")
+async def delete_stock_size(user_id: int, item_id: int, size: str) -> tuple[bool, str]:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT id FROM items WHERE id = ? AND user_id = ?",
+            (item_id, user_id),
+        )
+        if not await cursor.fetchone():
+            return False, "Товар не найден или доступ запрещён."
+
         cursor = await db.execute(
             "SELECT id FROM stock WHERE item_id = ? AND size = ?",
             (item_id, size),
         )
         stock_row = await cursor.fetchone()
         if not stock_row:
-            print(f"❌ Размер {size} не найден в stock")
             return False, "Размер не найден на складе."
 
         await db.execute(
@@ -264,44 +280,19 @@ async def delete_stock_size(item_id: int, size: str) -> tuple[bool, str]:
                 await db.execute("DELETE FROM items WHERE id = ?", (item_id,))
 
         await db.commit()
-    print(f"✅ Размер {size} удалён")
     return True, f"Размер {size} удалён со склада."
 
 
-async def get_recent_sales(limit: int = 20) -> list[dict[str, Any]]:
-    limit = max(1, min(limit, 50))
+async def sell_item(user_id: int, item_id: int, size: str) -> tuple[bool, str]:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
-            """
-            SELECT
-                s.sold_at,
-                COALESCE(i.name, 'Удалённый товар') AS name,
-                s.size,
-                s.price
-            FROM sales s
-            LEFT JOIN items i ON i.id = s.item_id
-            ORDER BY s.sold_at DESC, s.id DESC
-            LIMIT ?
-            """,
-            (limit,),
+            "SELECT id FROM items WHERE id = ? AND user_id = ?",
+            (item_id, user_id),
         )
-        rows = await cursor.fetchall()
+        if not await cursor.fetchone():
+            return False, "Товар не найден или доступ запрещён."
 
-    return [
-        {
-            "sold_at": row["sold_at"],
-            "name": row["name"],
-            "size": row["size"],
-            "price": row["price"] or 0,
-        }
-        for row in rows
-    ]
-
-
-async def sell_item(item_id: int, size: str) -> tuple[bool, str]:
-    async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
         cursor = await db.execute(
             "SELECT id, quantity FROM stock WHERE item_id = ? AND size = ?",
             (item_id, size),
@@ -337,12 +328,19 @@ async def sell_item(item_id: int, size: str) -> tuple[bool, str]:
         return True, "Продажа зафиксирована."
 
 
-async def replenish_stock(item_id: int, size: str, amount: int) -> tuple[bool, str]:
+async def replenish_stock(user_id: int, item_id: int, size: str, amount: int) -> tuple[bool, str]:
     if amount <= 0:
         return False, "Количество должно быть положительным числом."
 
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT id FROM items WHERE id = ? AND user_id = ?",
+            (item_id, user_id),
+        )
+        if not await cursor.fetchone():
+            return False, "Товар не найден или доступ запрещён."
+
         cursor = await db.execute(
             "SELECT id, quantity FROM stock WHERE item_id = ? AND size = ?",
             (item_id, size),
@@ -360,12 +358,18 @@ async def replenish_stock(item_id: int, size: str, amount: int) -> tuple[bool, s
         return True, f"Добавлено {amount} шт."
 
 
-async def get_dashboard_stats() -> dict[str, Any]:
+async def get_dashboard_stats(user_id: int) -> dict[str, Any]:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
 
         cursor = await db.execute(
-            "SELECT COALESCE(SUM(quantity), 0) AS total FROM stock"
+            """
+            SELECT COALESCE(SUM(s.quantity), 0) AS total
+            FROM stock s
+            JOIN items i ON i.id = s.item_id
+            WHERE i.user_id = ?
+            """,
+            (user_id,),
         )
         stock_row = await cursor.fetchone()
         total_stock = stock_row["total"] if stock_row else 0
@@ -374,10 +378,13 @@ async def get_dashboard_stats() -> dict[str, Any]:
             """
             SELECT
                 COUNT(*) AS sold_count,
-                COALESCE(SUM(price), 0) AS revenue,
-                COALESCE(SUM(purchase_price), 0) AS cost
-            FROM sales
-            """
+                COALESCE(SUM(s.price), 0) AS revenue,
+                COALESCE(SUM(s.purchase_price), 0) AS cost
+            FROM sales s
+            JOIN items i ON i.id = s.item_id
+            WHERE i.user_id = ?
+            """,
+            (user_id,),
         )
         sales_row = await cursor.fetchone()
 
@@ -397,8 +404,8 @@ async def get_dashboard_stats() -> dict[str, Any]:
     }
 
 
-async def get_finance_stats() -> dict[str, Any]:
-    stats = await get_dashboard_stats()
+async def get_finance_stats(user_id: int) -> dict[str, Any]:
+    stats = await get_dashboard_stats(user_id)
     return {
         "revenue": stats["revenue"],
         "cost": stats["cost"],
@@ -408,8 +415,8 @@ async def get_finance_stats() -> dict[str, Any]:
     }
 
 
-async def get_statistics() -> dict[str, Any]:
-    stats = await get_finance_stats()
+async def get_statistics(user_id: int) -> dict[str, Any]:
+    stats = await get_finance_stats(user_id)
     sold_count = stats["sold_count"] or 0
     revenue = stats["revenue"] or 0
     avg_price = revenue / sold_count if sold_count > 0 else 0
@@ -421,17 +428,19 @@ async def get_statistics() -> dict[str, Any]:
     }
 
 
-# === ОБЁРТКИ ДЛЯ УДОБСТВА (используются в handlers) ===
-async def delete_size(item_id: int, size: str) -> tuple[bool, str]:
-    return await delete_stock_size(item_id, size)
+async def delete_size(user_id: int, item_id: int, size: str) -> tuple[bool, str]:
+    return await delete_stock_size(user_id, item_id, size)
 
 
-async def update_price(item_id: int, new_sale_price: float) -> tuple[bool, str]:
+async def update_price(user_id: int, item_id: int, new_sale_price: float) -> tuple[bool, str]:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
-        cursor = await db.execute("SELECT purchase_price FROM items WHERE id = ?", (item_id,))
+        cursor = await db.execute(
+            "SELECT purchase_price FROM items WHERE id = ? AND user_id = ?",
+            (item_id, user_id),
+        )
         row = await cursor.fetchone()
         if not row:
-            return False, "Товар не найден."
+            return False, "Товар не найден или доступ запрещён."
         purchase_price = row["purchase_price"] or 0
-        return await update_item_prices(item_id, purchase_price, new_sale_price)
+        return await update_item_prices(user_id, item_id, purchase_price, new_sale_price)

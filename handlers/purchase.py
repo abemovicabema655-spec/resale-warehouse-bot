@@ -128,6 +128,7 @@ async def process_purchase_price(message: Message, state: FSMContext) -> None:
 @router.message(PurchaseStates.sale_price)
 async def process_sale_price(message: Message, state: FSMContext) -> None:
     try:
+        user_id = message.from_user.id
         text = (message.text or "").strip().replace(",", ".")
         try:
             price = float(text)
@@ -142,6 +143,7 @@ async def process_sale_price(message: Message, state: FSMContext) -> None:
 
         data = await state.get_data()
         item = await add_purchase(
+            user_id=user_id,                     # <-- добавили user_id
             name=data["name"],
             size=data["size"],
             quantity=data["quantity"],

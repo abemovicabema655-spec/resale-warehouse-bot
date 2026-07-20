@@ -1,25 +1,22 @@
-import logging
-
 from aiogram import F, Router
 from aiogram.types import Message
-
 from database.db import get_finance_stats
 from keyboards.menus import back_inline_keyboard
-from utils.formatters import format_finance
 
-logger = logging.getLogger(__name__)
 router = Router()
-
 
 @router.message(F.text == "💰 Финансы")
 async def show_finance(message: Message) -> None:
     try:
-        stats = await get_finance_stats()
-        await message.answer(
-            format_finance(stats),
-            reply_markup=back_inline_keyboard(),
-            parse_mode="HTML",
+        user_id = message.from_user.id
+        stats = await get_finance_stats(user_id)
+        text = (
+            f"💰 Финансовый отчёт:\n"
+            f"• Выручка: {stats['revenue']:.2f} ₽\n"
+            f"• Себестоимость проданных товаров: {stats['cost']:.2f} ₽\n"
+            f"• Прибыль: {stats['profit']:.2f} ₽\n"
+            f"• Количество продаж: {stats['sold_count']}"
         )
-    except Exception as exc:
-        logger.exception("Ошибка раздела финансы: %s", exc)
-        await message.answer("⚠️ Не удалось загрузить финансовый отчёт.")
+        await message.answer(text, reply_markup=back_inline_keyboard())
+    except Exception as e:
+        await message.answer(f"⚠️ Не удалось загрузить финансы: {e}")

@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-DB_URL = os.getenv("DATABASE_URL")  # Используем PostgreSQL
+DB_URL = DB_URL = "postgresql://neondb_owner:npg_wk1qSUQ2brms@ep-restless-mud-as38r0fx-pooler.c-4.eu-central-1.aws.neon.tech/neondb?sslmode=require"
 
 def get_bot_token() -> str:
     if not BOT_TOKEN:

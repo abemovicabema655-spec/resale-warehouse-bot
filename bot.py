@@ -6,6 +6,7 @@ import logging
 import sys
 import threading
 import os
+import time
 
 from flask import Flask
 from aiogram import Bot, Dispatcher
@@ -55,15 +56,27 @@ async def on_error(event: ErrorEvent) -> None:
 
 
 async def main() -> None:
-    # Запускаем веб-сервер в отдельном потоке, чтобы не блокировать бота
+    # Запускаем веб-сервер в отдельном потоке
     threading.Thread(target=run_web, daemon=True).start()
     logger.info("Веб-сервер для Render запущен")
 
-    await init_db()
+    # Повторные попытки инициализации БД (до 5 раз, с паузой 5 сек)
+    for attempt in range(1, 6):
+        try:
+            await init_db()
+            break
+        except Exception as e:
+            if attempt == 5:
+                logger.critical(f"❌ Не удалось инициализировать БД после 5 попыток: {e}")
+                sys.exit(1)
+            logger.warning(f"⚠️ Ошибка инициализации БД (попытка {attempt}/5), повтор через 5 сек...")
+            await asyncio.sleep(5)
 
     bot = Bot(
         token=get_bot_token(),
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+        timeout=15,
+        connect_timeout=10,
     )
     dp = Dispatcher(storage=MemoryStorage())
 

@@ -1,15 +1,29 @@
+import asyncio
 import logging
-from typing import Any, Optional
-from datetime import datetime
+from typing import Any
+
 import asyncpg
 from config import DB_URL
 
 logger = logging.getLogger(__name__)
 
 
-async def get_connection():
-    """Создаёт и возвращает подключение к PostgreSQL."""
-    return await asyncpg.connect(DB_URL)
+async def get_connection(retries: int = 5, delay: int = 3):
+    """Подключается к PostgreSQL с повторными попытками, если БД «спит»."""
+    last_error = None
+    for attempt in range(1, retries + 1):
+        try:
+            conn = await asyncpg.connect(DB_URL)
+            logger.info("✅ Подключение к базе данных установлено")
+            return conn
+        except Exception as e:
+            last_error = e
+            if attempt < retries:
+                logger.warning(f"⚠️ Не удалось подключиться к БД (попытка {attempt}/{retries}), повтор через {delay} сек...")
+                await asyncio.sleep(delay)
+            else:
+                logger.error(f"❌ Не удалось подключиться к БД после {retries} попыток: {e}")
+    raise last_error or Exception("Неизвестная ошибка подключения")
 
 
 async def init_db() -> None:
@@ -57,6 +71,7 @@ async def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_items_name ON items(name);
         """)
         await conn.execute("COMMIT")
+        logger.info("✅ Таблицы созданы/проверены")
     finally:
         await conn.close()
 
@@ -84,7 +99,6 @@ async def add_purchase(
 ) -> dict[str, Any]:
     conn = await get_connection()
     try:
-        # Проверяем, есть ли уже такой товар у пользователя
         row = await conn.fetchrow(
             "SELECT id FROM items WHERE user_id = $1 AND name = $2",
             user_id, name.strip()
@@ -109,7 +123,6 @@ async def add_purchase(
                 user_id, name.strip(), category, purchase_price, sale_price
             )
 
-        # Обновляем или вставляем размер
         stock_row = await conn.fetchrow(
             "SELECT id, quantity FROM stock WHERE item_id = $1 AND size = $2",
             item_id, size.strip()
@@ -128,7 +141,6 @@ async def add_purchase(
 
         await conn.execute("COMMIT")
 
-        # Получаем данные для ответа
         item = await conn.fetchrow("SELECT * FROM items WHERE id = $1", item_id)
         stock = await conn.fetchrow(
             "SELECT quantity FROM stock WHERE item_id = $1 AND size = $2",
@@ -173,7 +185,6 @@ async def get_warehouse_items(user_id: int) -> list[dict[str, Any]]:
             """,
             user_id
         )
-        # Группируем в словарь
         grouped = {}
         for row in rows:
             item_id = row["item_id"]
@@ -237,7 +248,6 @@ async def update_item_prices(
 async def delete_stock_size(user_id: int, item_id: int, size: str) -> tuple[bool, str]:
     conn = await get_connection()
     try:
-        # Проверяем, что товар принадлежит пользователю
         row = await conn.fetchrow(
             "SELECT id FROM items WHERE id = $1 AND user_id = $2",
             item_id, user_id
@@ -245,7 +255,6 @@ async def delete_stock_size(user_id: int, item_id: int, size: str) -> tuple[bool
         if not row:
             return False, "Товар не найден или доступ запрещён."
 
-        # Удаляем размер
         res = await conn.execute(
             "DELETE FROM stock WHERE item_id = $1 AND size = $2",
             item_id, size
@@ -253,13 +262,11 @@ async def delete_stock_size(user_id: int, item_id: int, size: str) -> tuple[bool
         if res == "DELETE 0":
             return False, "Размер не найден на складе."
 
-        # Проверяем, остались ли ещё размеры у товара
         remaining = await conn.fetchval(
             "SELECT COUNT(*) FROM stock WHERE item_id = $1",
             item_id
         )
         if remaining == 0:
-            # Если нет продаж — удаляем товар
             sales_count = await conn.fetchval(
                 "SELECT COUNT(*) FROM sales WHERE item_id = $1",
                 item_id
@@ -276,7 +283,6 @@ async def delete_stock_size(user_id: int, item_id: int, size: str) -> tuple[bool
 async def sell_item(user_id: int, item_id: int, size: str) -> tuple[bool, str]:
     conn = await get_connection()
     try:
-        # Проверяем, что товар принадлежит пользователю
         row = await conn.fetchrow(
             "SELECT id FROM items WHERE id = $1 AND user_id = $2",
             item_id, user_id
@@ -284,7 +290,6 @@ async def sell_item(user_id: int, item_id: int, size: str) -> tuple[bool, str]:
         if not row:
             return False, "Товар не найден или доступ запрещён."
 
-        # Проверяем остаток
         stock_row = await conn.fetchrow(
             "SELECT id, quantity FROM stock WHERE item_id = $1 AND size = $2",
             item_id, size
@@ -292,7 +297,6 @@ async def sell_item(user_id: int, item_id: int, size: str) -> tuple[bool, str]:
         if not stock_row or (stock_row["quantity"] or 0) <= 0:
             return False, "Нет товара в наличии для продажи."
 
-        # Получаем цены товара
         item = await conn.fetchrow(
             "SELECT sale_price, purchase_price FROM items WHERE id = $1",
             item_id
@@ -303,12 +307,10 @@ async def sell_item(user_id: int, item_id: int, size: str) -> tuple[bool, str]:
         sale_price = item["sale_price"] or 0
         purchase_price = item["purchase_price"] or 0
 
-        # Уменьшаем остаток
         await conn.execute(
             "UPDATE stock SET quantity = quantity - 1 WHERE id = $1",
             stock_row["id"]
         )
-        # Записываем продажу
         await conn.execute(
             """
             INSERT INTO sales (item_id, size, price, purchase_price)
@@ -328,7 +330,6 @@ async def replenish_stock(user_id: int, item_id: int, size: str, amount: int) ->
 
     conn = await get_connection()
     try:
-        # Проверяем, что товар принадлежит пользователю
         row = await conn.fetchrow(
             "SELECT id FROM items WHERE id = $1 AND user_id = $2",
             item_id, user_id
@@ -415,7 +416,7 @@ async def get_statistics(user_id: int) -> dict[str, Any]:
     }
 
 
-# Обёртки для удобства (сохраняем имена, которые используются в handlers)
+# Обёртки
 async def delete_size(user_id: int, item_id: int, size: str) -> tuple[bool, str]:
     return await delete_stock_size(user_id, item_id, size)
 

@@ -672,3 +672,40 @@ async def undo_sale(user_id: int, sale_id: int) -> tuple[bool, str]:
         return True, f"Продажа отменена, товар {size} возвращён на склад."
     finally:
         await conn.close()
+
+
+# ===================================================
+# === ОБНУЛИТЬ ВСЁ ===
+# ===================================================
+
+async def reset_user_data(user_id: int) -> tuple[bool, str]:
+    conn = await get_connection()
+    try:
+        # Удаляем все продажи пользователя
+        await conn.execute(
+            """
+            DELETE FROM sales
+            WHERE item_id IN (SELECT id FROM items WHERE user_id = $1)
+            """,
+            user_id
+        )
+        # Удаляем все остатки (stock)
+        await conn.execute(
+            """
+            DELETE FROM stock
+            WHERE item_id IN (SELECT id FROM items WHERE user_id = $1)
+            """,
+            user_id
+        )
+        # Удаляем все товары
+        await conn.execute(
+            "DELETE FROM items WHERE user_id = $1",
+            user_id
+        )
+        await conn.execute("COMMIT")
+        return True, "✅ Все данные обнулены. Склад и статистика очищены."
+    except Exception as e:
+        await conn.execute("ROLLBACK")
+        return False, f"❌ Ошибка при обнулении: {e}"
+    finally:
+        await conn.close()

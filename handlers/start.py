@@ -10,9 +10,12 @@ from database.db import (
     get_sales_history,
     get_sales_history_count,
     undo_sale,
+    reset_user_data,
 )
 from keyboards.menus import main_menu_keyboard, back_inline_keyboard
 from utils.formatters import format_warehouse
+from states.purchase import ResetStates
+from aiogram.fsm.context import FSMContext
 import logging
 
 logger = logging.getLogger(__name__)
@@ -132,7 +135,7 @@ async def unarchive_item_callback(callback: CallbackQuery) -> None:
 
 
 # ===================================================
-# === ИСТОРИЯ ПРОДАЖ (исправлено) ===
+# === ИСТОРИЯ ПРОДАЖ ===
 # ===================================================
 
 PERIODS = {
@@ -190,7 +193,6 @@ async def history_callback(callback: CallbackQuery) -> None:
     if action == "filter":
         period = parts[2]
         print(f"🔍 Фильтр: {period}")
-        # Передаём user_id из callback, а не из message
         await _show_history_page(callback, page=0, period=period, is_callback=True)
         await callback.answer()
 
@@ -222,7 +224,6 @@ async def _show_history_page(
     is_callback: bool = False,
     user_id: int = None,
 ):
-    # Определяем user_id
     if user_id is None:
         if is_callback:
             user_id = source.from_user.id
@@ -250,7 +251,6 @@ async def _show_history_page(
                 await source.answer(text, reply_markup=keyboard)
             return
 
-        # Группировка по дням
         grouped = {}
         for sale in sales:
             date_key = sale["sold_at"].strftime("%Y-%m-%d")
@@ -305,3 +305,36 @@ async def _show_history_page(
             await source.message.edit_text(error_text, reply_markup=back_inline_keyboard())
         else:
             await source.answer(error_text, reply_markup=back_inline_keyboard())
+
+
+# ===================================================
+# === ОБНУЛЕНИЕ ВСЕХ ДАННЫХ ===
+# ===================================================
+
+@router.message(F.text == "🗑️ Обнулить всё")
+async def reset_confirm(message: Message, state: FSMContext) -> None:
+    await state.set_state(ResetStates.confirm)
+    await message.answer(
+        "⚠️ *Вы уверены, что хотите полностью обнулить склад и статистику?*\n\n"
+        "Это действие *необратимо*! Все товары, продажи и финансы будут удалены.\n\n"
+        "Напишите *«Да»* для подтверждения или *«Нет»* для отмены.",
+        parse_mode="Markdown"
+    )
+
+@router.message(ResetStates.confirm)
+async def reset_execute(message: Message, state: FSMContext) -> None:
+    user_id = message.from_user.id
+    answer = message.text.strip().lower()
+
+    if answer == "да":
+        success, msg = await reset_user_data(user_id)
+        await message.answer(msg, reply_markup=main_menu_keyboard())
+    elif answer == "нет":
+        await message.answer("❌ Обнуление отменено.", reply_markup=main_menu_keyboard())
+    else:
+        await message.answer(
+            "⚠️ Пожалуйста, напишите *«Да»* или *«Нет»*.",
+            parse_mode="Markdown"
+        )
+        return
+    await state.clear()

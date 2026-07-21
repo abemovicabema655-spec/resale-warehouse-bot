@@ -132,7 +132,7 @@ async def unarchive_item_callback(callback: CallbackQuery) -> None:
 
 
 # ===================================================
-# === ИСТОРИЯ ПРОДАЖ (С ОТЛАДКОЙ) ===
+# === ИСТОРИЯ ПРОДАЖ (исправлено) ===
 # ===================================================
 
 PERIODS = {
@@ -178,7 +178,7 @@ def _build_history_keyboard(page: int, total_pages: int, period: str) -> InlineK
 @router.message(F.text == "📋 История продаж")
 async def sales_history(message: Message) -> None:
     print("📋 Нажата кнопка 'История продаж'")
-    await _show_history_page(message, page=0, period="all")
+    await _show_history_page(message, page=0, period="all", user_id=message.from_user.id)
 
 
 @router.callback_query(F.data.startswith("history:"))
@@ -190,14 +190,15 @@ async def history_callback(callback: CallbackQuery) -> None:
     if action == "filter":
         period = parts[2]
         print(f"🔍 Фильтр: {period}")
-        await _show_history_page(callback.message, page=0, period=period, is_callback=True)
+        # Передаём user_id из callback, а не из message
+        await _show_history_page(callback, page=0, period=period, is_callback=True)
         await callback.answer()
 
     elif action == "page":
         page = int(parts[2])
         period = parts[3]
         print(f"🔍 Страница: {page}, период: {period}")
-        await _show_history_page(callback.message, page=page, period=period, is_callback=True)
+        await _show_history_page(callback, page=page, period=period, is_callback=True)
         await callback.answer()
 
     elif action == "undo":
@@ -208,7 +209,7 @@ async def history_callback(callback: CallbackQuery) -> None:
             await callback.answer(msg, show_alert=True)
             return
         await callback.answer(msg)
-        await _show_history_page(callback.message, page=0, period="all", is_callback=True)
+        await _show_history_page(callback, page=0, period="all", is_callback=True)
 
     elif action == "ignore":
         await callback.answer()
@@ -219,8 +220,15 @@ async def _show_history_page(
     page: int,
     period: str,
     is_callback: bool = False,
+    user_id: int = None,
 ):
-    user_id = source.from_user.id if isinstance(source, Message) else source.from_user.id
+    # Определяем user_id
+    if user_id is None:
+        if is_callback:
+            user_id = source.from_user.id
+        else:
+            user_id = source.from_user.id
+
     print(f"🔍 _show_history_page: user_id={user_id}, page={page}, period={period}, is_callback={is_callback}")
 
     try:
@@ -237,7 +245,7 @@ async def _show_history_page(
             text = "📋 Продаж за выбранный период нет."
             keyboard = _build_history_keyboard(page, total_pages, period)
             if is_callback:
-                await source.edit_text(text, reply_markup=keyboard)
+                await source.message.edit_text(text, reply_markup=keyboard)
             else:
                 await source.answer(text, reply_markup=keyboard)
             return
@@ -285,7 +293,7 @@ async def _show_history_page(
         keyboard = _build_history_keyboard(page, total_pages, period)
 
         if is_callback:
-            await source.edit_text(text, reply_markup=keyboard, parse_mode="Markdown")
+            await source.message.edit_text(text, reply_markup=keyboard, parse_mode="Markdown")
         else:
             await source.answer(text, reply_markup=keyboard, parse_mode="Markdown")
 
@@ -294,6 +302,6 @@ async def _show_history_page(
         logger.exception("Ошибка загрузки истории продаж: %s", exc)
         error_text = "⚠️ Не удалось загрузить историю продаж."
         if is_callback:
-            await source.edit_text(error_text, reply_markup=back_inline_keyboard())
+            await source.message.edit_text(error_text, reply_markup=back_inline_keyboard())
         else:
             await source.answer(error_text, reply_markup=back_inline_keyboard())

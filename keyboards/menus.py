@@ -6,7 +6,9 @@ MAIN_MENU_BUTTONS = [
     ["🚚 Поставки", "📈 Статистика"],
     ["📋 История продаж", "📂 Архив"],
     ["🔔 Умные уведомления", "🗑️ Обнулить всё"],
+    ["ℹ️ О боте"],  # <-- добавлена новая кнопка
 ]
+
 
 def main_menu_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(

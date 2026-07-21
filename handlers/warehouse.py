@@ -13,7 +13,7 @@ from database.db import (
     update_price,
     search_warehouse_items,
     archive_item,
-    check_low_stock,          # <-- добавлен импорт
+    check_low_stock,          # <-- импорт добавлен сюда
 )
 from keyboards.menus import (
     back_inline_keyboard,

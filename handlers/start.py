@@ -1,3 +1,32 @@
+from aiogram import F, Router
+from aiogram.filters import Command
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+
+from database.db import (
+    register_user,
+    get_dashboard_stats,
+    get_archived_items,
+    unarchive_item,
+    get_sales_history,
+    get_sales_history_count,
+    undo_sale,
+    reset_user_data,
+    get_warehouse_items,
+    set_threshold,
+)
+from keyboards.menus import main_menu_keyboard, back_inline_keyboard, cancel_inline_keyboard
+from utils.formatters import format_warehouse
+from states.purchase import ResetStates, ThresholdStates
+from aiogram.fsm.context import FSMContext
+import logging
+
+logger = logging.getLogger(__name__)
+router = Router()
+
+# ===================================================
+# === СТАРТ ===
+# ===================================================
+
 @router.message(Command("start"))
 async def start(message: Message) -> None:
     user_id = message.from_user.id
@@ -18,6 +47,7 @@ async def start(message: Message) -> None:
         reply_markup=main_menu_keyboard(),
         parse_mode="Markdown"
     )
+
 
 @router.message(F.text == "📦 Главный экран")
 async def main_screen(message: Message) -> None:

@@ -12,7 +12,8 @@ from database.db import (
     delete_size,
     update_price,
     search_warehouse_items,
-    archive_item,          # <-- добавлен импорт
+    archive_item,
+    check_low_stock,          # <-- добавлен импорт
 )
 from keyboards.menus import (
     back_inline_keyboard,
@@ -64,6 +65,15 @@ async def process_sell(callback: CallbackQuery) -> None:
         text, keyboard = await _render_warehouse_message(items)
         await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
         await callback.answer("✅ Продажа зафиксирована")
+
+        # === УМНОЕ УВЕДОМЛЕНИЕ ===
+        low = await check_low_stock(user_id)
+        if low:
+            text = "⚠️ *Внимание! Заканчиваются товары:*\n\n"
+            for item in low:
+                text += f"• {item['name']} (размер {item['size']}) — осталось {item['quantity']} шт. (порог {item['threshold']})\n"
+            await callback.message.answer(text, parse_mode="Markdown")
+
     except Exception as exc:
         logger.exception("Ошибка продажи: %s", exc)
         await callback.answer("⚠️ Ошибка при продаже", show_alert=True)

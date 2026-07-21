@@ -11,10 +11,12 @@ from database.db import (
     get_sales_history_count,
     undo_sale,
     reset_user_data,
+    get_warehouse_items,
+    set_threshold,
 )
-from keyboards.menus import main_menu_keyboard, back_inline_keyboard
+from keyboards.menus import main_menu_keyboard, back_inline_keyboard, cancel_inline_keyboard
 from utils.formatters import format_warehouse
-from states.purchase import ResetStates
+from states.purchase import ResetStates, ThresholdStates
 from aiogram.fsm.context import FSMContext
 import logging
 
@@ -308,7 +310,7 @@ async def _show_history_page(
 
 
 # ===================================================
-# === ОБНУЛЕНИЕ ВСЕХ ДАННЫХ ===
+# === ОБНУЛЕНИЕ ===
 # ===================================================
 
 @router.message(F.text == "🗑️ Обнулить всё")
@@ -338,3 +340,99 @@ async def reset_execute(message: Message, state: FSMContext) -> None:
         )
         return
     await state.clear()
+
+
+# ===================================================
+# === УМНЫЕ УВЕДОМЛЕНИЯ (настройка порогов) ===
+# ===================================================
+
+@router.message(F.text == "🔔 Умные уведомления")
+async def show_thresholds(message: Message) -> None:
+    try:
+        user_id = message.from_user.id
+        items = await get_warehouse_items(user_id)
+        if not items:
+            await message.answer(
+                "📦 У вас пока нет товаров на складе.\n"
+                "Сначала добавьте товары через «➕ Новая закупка».",
+                reply_markup=back_inline_keyboard()
+            )
+            return
+
+        text = "🔔 *Настройка умных уведомлений*\n\n"
+        text += "_Порог — это минимальное количество товара, при котором бот пришлёт уведомление, что товар заканчивается._\n\n"
+
+        keyboard = []
+        for item in items:
+            item_id = item["item_id"]
+            name = item["name"]
+            threshold = item.get("threshold", 3)
+            text += f"• *{name}*\n"
+            text += f"   Текущий порог: {threshold} шт.\n\n"
+            keyboard.append([
+                InlineKeyboardButton(
+                    text=f"✏️ Изменить порог для {name}",
+                    callback_data=f"set_threshold:{item_id}"
+                )
+            ])
+
+        keyboard.append([InlineKeyboardButton(text="🔙 Назад", callback_data="back:menu")])
+        await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode="Markdown")
+    except Exception as exc:
+        logger.exception("Ошибка загрузки порогов: %s", exc)
+        await message.answer("⚠️ Не удалось загрузить настройки уведомлений.")
+
+
+@router.callback_query(F.data.startswith("set_threshold:"))
+async def start_set_threshold(callback: CallbackQuery, state: FSMContext) -> None:
+    try:
+        _, item_id_str = callback.data.split(":", 1)
+        item_id = int(item_id_str)
+        await state.update_data(item_id=item_id)
+        await state.set_state(ThresholdStates.waiting_for_value)
+        await callback.answer()
+        await callback.message.answer(
+            "✏️ Введите новый порог для этого товара (целое число):\n\n"
+            "Например: *3* — значит, когда останется 3 или меньше штук, вы получите уведомление.",
+            reply_markup=cancel_inline_keyboard(),
+            parse_mode="Markdown"
+        )
+    except Exception as exc:
+        logger.exception("Ошибка начала настройки порога: %s", exc)
+        await callback.answer("⚠️ Ошибка", show_alert=True)
+
+
+@router.message(ThresholdStates.waiting_for_value)
+async def process_set_threshold(message: Message, state: FSMContext) -> None:
+    try:
+        user_id = message.from_user.id
+        text = message.text.strip()
+        if not text.isdigit() or int(text) < 0:
+            await message.answer(
+                "⚠️ Введите целое неотрицательное число (например, 3).",
+                reply_markup=cancel_inline_keyboard()
+            )
+            return
+        threshold = int(text)
+        data = await state.get_data()
+        item_id = data.get("item_id")
+        if not item_id:
+            await state.clear()
+            await message.answer(
+                "⚠️ Сессия устарела. Попробуйте снова.",
+                reply_markup=main_menu_keyboard()
+            )
+            return
+        success, msg = await set_threshold(user_id, item_id, threshold)
+        await state.clear()
+        if not success:
+            await message.answer(f"⚠️ {msg}", reply_markup=main_menu_keyboard())
+            return
+        await show_thresholds(message)
+    except Exception as exc:
+        logger.exception("Ошибка установки порога: %s", exc)
+        await state.clear()
+        await message.answer(
+            "⚠️ Не удалось установить порог.",
+            reply_markup=main_menu_keyboard()
+        )

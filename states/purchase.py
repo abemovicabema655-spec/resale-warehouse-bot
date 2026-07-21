@@ -19,3 +19,6 @@ class EditPriceStates(StatesGroup):
 
 class ResetStates(StatesGroup):
     confirm = State()
+
+class ThresholdStates(StatesGroup):
+    waiting_for_value = State()

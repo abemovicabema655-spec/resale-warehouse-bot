@@ -46,7 +46,8 @@ async def init_db() -> None:
                 category TEXT DEFAULT 'Общее',
                 purchase_price REAL,
                 sale_price REAL,
-                archived BOOLEAN DEFAULT FALSE
+                archived BOOLEAN DEFAULT FALSE,
+                threshold INTEGER DEFAULT 3
             );
 
             CREATE TABLE IF NOT EXISTS stock (
@@ -118,8 +119,8 @@ async def add_purchase(
         else:
             item_id = await conn.fetchval(
                 """
-                INSERT INTO items (user_id, name, category, purchase_price, sale_price)
-                VALUES ($1, $2, $3, $4, $5)
+                INSERT INTO items (user_id, name, category, purchase_price, sale_price, threshold)
+                VALUES ($1, $2, $3, $4, $5, 3)
                 RETURNING id
                 """,
                 user_id, name.strip(), category, purchase_price, sale_price
@@ -154,6 +155,7 @@ async def add_purchase(
             "category": item["category"],
             "purchase_price": item["purchase_price"],
             "sale_price": item["sale_price"],
+            "threshold": item["threshold"] or 3,
             "size": size.strip(),
             "quantity": stock["quantity"] if stock else quantity,
         }
@@ -177,6 +179,7 @@ async def get_warehouse_items(user_id: int) -> list[dict[str, Any]]:
                 i.name,
                 i.purchase_price,
                 i.sale_price,
+                i.threshold,
                 s.id AS stock_id,
                 s.size,
                 s.quantity
@@ -196,6 +199,7 @@ async def get_warehouse_items(user_id: int) -> list[dict[str, Any]]:
                     "name": row["name"],
                     "purchase_price": row["purchase_price"] or 0,
                     "sale_price": row["sale_price"] or 0,
+                    "threshold": row["threshold"] or 3,
                     "sizes": []
                 }
             grouped[item_id]["sizes"].append({
@@ -212,7 +216,7 @@ async def get_item_by_id(user_id: int, item_id: int) -> dict[str, Any] | None:
     conn = await get_connection()
     try:
         row = await conn.fetchrow(
-            "SELECT id, name, purchase_price, sale_price FROM items WHERE id = $1 AND user_id = $2",
+            "SELECT id, name, purchase_price, sale_price, threshold FROM items WHERE id = $1 AND user_id = $2",
             item_id, user_id
         )
         if not row:
@@ -222,6 +226,7 @@ async def get_item_by_id(user_id: int, item_id: int) -> dict[str, Any] | None:
             "name": row["name"],
             "purchase_price": row["purchase_price"] or 0,
             "sale_price": row["sale_price"] or 0,
+            "threshold": row["threshold"] or 3,
         }
     finally:
         await conn.close()
@@ -452,6 +457,7 @@ async def search_warehouse_items(user_id: int, query: str) -> list[dict[str, Any
                 i.name,
                 i.purchase_price,
                 i.sale_price,
+                i.threshold,
                 s.id AS stock_id,
                 s.size,
                 s.quantity
@@ -471,6 +477,7 @@ async def search_warehouse_items(user_id: int, query: str) -> list[dict[str, Any
                     "name": row["name"],
                     "purchase_price": row["purchase_price"] or 0,
                     "sale_price": row["sale_price"] or 0,
+                    "threshold": row["threshold"] or 3,
                     "sizes": []
                 }
             grouped[item_id]["sizes"].append({
@@ -527,6 +534,7 @@ async def get_archived_items(user_id: int) -> list[dict[str, Any]]:
                 i.name,
                 i.purchase_price,
                 i.sale_price,
+                i.threshold,
                 s.id AS stock_id,
                 s.size,
                 s.quantity
@@ -546,6 +554,7 @@ async def get_archived_items(user_id: int) -> list[dict[str, Any]]:
                     "name": row["name"],
                     "purchase_price": row["purchase_price"] or 0,
                     "sale_price": row["sale_price"] or 0,
+                    "threshold": row["threshold"] or 3,
                     "sizes": []
                 }
             grouped[item_id]["sizes"].append({
@@ -559,7 +568,7 @@ async def get_archived_items(user_id: int) -> list[dict[str, Any]]:
 
 
 # ===================================================
-# === ИСТОРИЯ ПРОДАЖ (исправлено, с учётом часового пояса) ===
+# === ИСТОРИЯ ПРОДАЖ ===
 # ===================================================
 
 async def get_sales_history(
@@ -570,7 +579,7 @@ async def get_sales_history(
 ) -> list[dict[str, Any]]:
     conn = await get_connection()
     try:
-        tz = "Europe/Moscow"  # замени на свой часовой пояс при необходимости
+        tz = "Europe/Moscow"
         where = "WHERE i.user_id = $1"
         params = [user_id]
         if period == "day":
@@ -681,7 +690,6 @@ async def undo_sale(user_id: int, sale_id: int) -> tuple[bool, str]:
 async def reset_user_data(user_id: int) -> tuple[bool, str]:
     conn = await get_connection()
     try:
-        # Удаляем все продажи пользователя
         await conn.execute(
             """
             DELETE FROM sales
@@ -689,7 +697,6 @@ async def reset_user_data(user_id: int) -> tuple[bool, str]:
             """,
             user_id
         )
-        # Удаляем все остатки (stock)
         await conn.execute(
             """
             DELETE FROM stock
@@ -697,7 +704,6 @@ async def reset_user_data(user_id: int) -> tuple[bool, str]:
             """,
             user_id
         )
-        # Удаляем все товары
         await conn.execute(
             "DELETE FROM items WHERE user_id = $1",
             user_id
@@ -707,5 +713,71 @@ async def reset_user_data(user_id: int) -> tuple[bool, str]:
     except Exception as e:
         await conn.execute("ROLLBACK")
         return False, f"❌ Ошибка при обнулении: {e}"
+    finally:
+        await conn.close()
+
+
+# ===================================================
+# === ПОРОГИ (умные уведомления) ===
+# ===================================================
+
+async def get_threshold(user_id: int, item_id: int) -> int:
+    conn = await get_connection()
+    try:
+        row = await conn.fetchrow(
+            "SELECT threshold FROM items WHERE id = $1 AND user_id = $2",
+            item_id, user_id
+        )
+        return row["threshold"] if row else 3
+    finally:
+        await conn.close()
+
+
+async def set_threshold(user_id: int, item_id: int, threshold: int) -> tuple[bool, str]:
+    if threshold < 0:
+        return False, "Порог не может быть отрицательным."
+    conn = await get_connection()
+    try:
+        result = await conn.execute(
+            "UPDATE items SET threshold = $1 WHERE id = $2 AND user_id = $3",
+            threshold, item_id, user_id
+        )
+        if result == "UPDATE 0":
+            return False, "Товар не найден или доступ запрещён."
+        await conn.execute("COMMIT")
+        return True, f"Порог для товара установлен на {threshold} шт."
+    finally:
+        await conn.close()
+
+
+async def check_low_stock(user_id: int) -> list[dict[str, Any]]:
+    """Возвращает список товаров/размеров, где остаток <= порог."""
+    conn = await get_connection()
+    try:
+        rows = await conn.fetch(
+            """
+            SELECT
+                i.id AS item_id,
+                i.name,
+                i.threshold,
+                s.size,
+                s.quantity
+            FROM items i
+            JOIN stock s ON s.item_id = i.id
+            WHERE i.user_id = $1 AND s.quantity <= i.threshold AND s.quantity > 0
+            ORDER BY i.name, s.size
+            """,
+            user_id
+        )
+        return [
+            {
+                "item_id": row["item_id"],
+                "name": row["name"],
+                "threshold": row["threshold"],
+                "size": row["size"],
+                "quantity": row["quantity"],
+            }
+            for row in rows
+        ]
     finally:
         await conn.close()

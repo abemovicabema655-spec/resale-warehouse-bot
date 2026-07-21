@@ -481,3 +481,78 @@ async def search_warehouse_items(user_id: int, query: str) -> list[dict[str, Any
         return list(grouped.values())
     finally:
         await conn.close()
+
+
+# ===================================================
+# === АРХИВ ===
+# ===================================================
+
+async def archive_item(user_id: int, item_id: int) -> tuple[bool, str]:
+    conn = await get_connection()
+    try:
+        result = await conn.execute(
+            "UPDATE items SET archived = TRUE WHERE id = $1 AND user_id = $2",
+            item_id, user_id
+        )
+        if result == "UPDATE 0":
+            return False, "Товар не найден или уже в архиве."
+        await conn.execute("COMMIT")
+        return True, "✅ Товар перемещён в архив."
+    finally:
+        await conn.close()
+
+
+async def unarchive_item(user_id: int, item_id: int) -> tuple[bool, str]:
+    conn = await get_connection()
+    try:
+        result = await conn.execute(
+            "UPDATE items SET archived = FALSE WHERE id = $1 AND user_id = $2",
+            item_id, user_id
+        )
+        if result == "UPDATE 0":
+            return False, "Товар не найден или уже на складе."
+        await conn.execute("COMMIT")
+        return True, "✅ Товар восстановлен из архива."
+    finally:
+        await conn.close()
+
+
+async def get_archived_items(user_id: int) -> list[dict[str, Any]]:
+    conn = await get_connection()
+    try:
+        rows = await conn.fetch(
+            """
+            SELECT
+                i.id AS item_id,
+                i.name,
+                i.purchase_price,
+                i.sale_price,
+                s.id AS stock_id,
+                s.size,
+                s.quantity
+            FROM items i
+            INNER JOIN stock s ON s.item_id = i.id
+            WHERE i.user_id = $1 AND i.archived = TRUE
+            ORDER BY i.name, s.size
+            """,
+            user_id
+        )
+        grouped = {}
+        for row in rows:
+            item_id = row["item_id"]
+            if item_id not in grouped:
+                grouped[item_id] = {
+                    "item_id": item_id,
+                    "name": row["name"],
+                    "purchase_price": row["purchase_price"] or 0,
+                    "sale_price": row["sale_price"] or 0,
+                    "sizes": []
+                }
+            grouped[item_id]["sizes"].append({
+                "stock_id": row["stock_id"],
+                "size": row["size"],
+                "quantity": row["quantity"] or 0
+            })
+        return list(grouped.values())
+    finally:
+        await conn.close()

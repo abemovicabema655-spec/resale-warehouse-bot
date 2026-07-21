@@ -132,7 +132,7 @@ async def unarchive_item_callback(callback: CallbackQuery) -> None:
 
 
 # ===================================================
-# === ИСТОРИЯ ПРОДАЖ (исправлено) ===
+# === ИСТОРИЯ ПРОДАЖ (С ОТЛАДКОЙ) ===
 # ===================================================
 
 PERIODS = {
@@ -177,22 +177,26 @@ def _build_history_keyboard(page: int, total_pages: int, period: str) -> InlineK
 
 @router.message(F.text == "📋 История продаж")
 async def sales_history(message: Message) -> None:
+    print("📋 Нажата кнопка 'История продаж'")
     await _show_history_page(message, page=0, period="all")
 
 
 @router.callback_query(F.data.startswith("history:"))
 async def history_callback(callback: CallbackQuery) -> None:
+    print(f"🔍 history_callback: data={callback.data}")
     parts = callback.data.split(":")
     action = parts[1]
 
     if action == "filter":
         period = parts[2]
+        print(f"🔍 Фильтр: {period}")
         await _show_history_page(callback.message, page=0, period=period, is_callback=True)
         await callback.answer()
 
     elif action == "page":
         page = int(parts[2])
         period = parts[3]
+        print(f"🔍 Страница: {page}, период: {period}")
         await _show_history_page(callback.message, page=page, period=period, is_callback=True)
         await callback.answer()
 
@@ -204,7 +208,6 @@ async def history_callback(callback: CallbackQuery) -> None:
             await callback.answer(msg, show_alert=True)
             return
         await callback.answer(msg)
-        # После отмены обновляем текущую страницу (возвращаемся на первую)
         await _show_history_page(callback.message, page=0, period="all", is_callback=True)
 
     elif action == "ignore":
@@ -218,14 +221,17 @@ async def _show_history_page(
     is_callback: bool = False,
 ):
     user_id = source.from_user.id if isinstance(source, Message) else source.from_user.id
+    print(f"🔍 _show_history_page: user_id={user_id}, page={page}, period={period}, is_callback={is_callback}")
 
     try:
         limit = 10
         offset = page * limit
         total = await get_sales_history_count(user_id, period)
+        print(f"🔍 total count = {total}")
         total_pages = (total + limit - 1) // limit if total > 0 else 1
 
         sales = await get_sales_history(user_id, limit, offset, period)
+        print(f"🔍 получили {len(sales)} продаж")
 
         if not sales:
             text = "📋 Продаж за выбранный период нет."
@@ -284,6 +290,7 @@ async def _show_history_page(
             await source.answer(text, reply_markup=keyboard, parse_mode="Markdown")
 
     except Exception as exc:
+        print(f"❌ Ошибка в _show_history_page: {exc}")
         logger.exception("Ошибка загрузки истории продаж: %s", exc)
         error_text = "⚠️ Не удалось загрузить историю продаж."
         if is_callback:

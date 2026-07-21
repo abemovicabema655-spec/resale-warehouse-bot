@@ -559,7 +559,7 @@ async def get_archived_items(user_id: int) -> list[dict[str, Any]]:
 
 
 # ===================================================
-# === ИСТОРИЯ ПРОДАЖ (исправлено, без дублирования) ===
+# === ИСТОРИЯ ПРОДАЖ (С ОТЛАДКОЙ И ЧАСОВЫМ ПОЯСОМ) ===
 # ===================================================
 
 async def get_sales_history(
@@ -570,14 +570,15 @@ async def get_sales_history(
 ) -> list[dict[str, Any]]:
     conn = await get_connection()
     try:
+        tz = "Europe/Moscow"
         where = "WHERE i.user_id = $1"
         params = [user_id]
         if period == "day":
-            where += " AND s.sold_at >= CURRENT_DATE - INTERVAL '1 day'"
+            where += f" AND s.sold_at >= (CURRENT_DATE AT TIME ZONE '{tz}') - INTERVAL '1 day'"
         elif period == "week":
-            where += " AND s.sold_at >= CURRENT_DATE - INTERVAL '7 days'"
+            where += f" AND s.sold_at >= (CURRENT_DATE AT TIME ZONE '{tz}') - INTERVAL '7 days'"
         elif period == "month":
-            where += " AND s.sold_at >= CURRENT_DATE - INTERVAL '30 days'"
+            where += f" AND s.sold_at >= (CURRENT_DATE AT TIME ZONE '{tz}') - INTERVAL '30 days'"
 
         query = f"""
             SELECT
@@ -616,14 +617,15 @@ async def get_sales_history(
 async def get_sales_history_count(user_id: int, period: str = "all") -> int:
     conn = await get_connection()
     try:
+        tz = "Europe/Moscow"
         where = "WHERE i.user_id = $1"
         params = [user_id]
         if period == "day":
-            where += " AND s.sold_at >= CURRENT_DATE - INTERVAL '1 day'"
+            where += f" AND s.sold_at >= (CURRENT_DATE AT TIME ZONE '{tz}') - INTERVAL '1 day'"
         elif period == "week":
-            where += " AND s.sold_at >= CURRENT_DATE - INTERVAL '7 days'"
+            where += f" AND s.sold_at >= (CURRENT_DATE AT TIME ZONE '{tz}') - INTERVAL '7 days'"
         elif period == "month":
-            where += " AND s.sold_at >= CURRENT_DATE - INTERVAL '30 days'"
+            where += f" AND s.sold_at >= (CURRENT_DATE AT TIME ZONE '{tz}') - INTERVAL '30 days'"
 
         query = f"""
             SELECT COUNT(*) AS total

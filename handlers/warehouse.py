@@ -11,7 +11,7 @@ from database.db import (
     sell_item,
     delete_size,
     update_price,
-    search_warehouse_items,          # <-- добавлено
+    search_warehouse_items,
 )
 from keyboards.menus import (
     back_inline_keyboard,
@@ -19,7 +19,7 @@ from keyboards.menus import (
     main_menu_keyboard,
     warehouse_keyboard,
 )
-from states.purchase import ReplenishStates, SearchStates   # <-- добавлено
+from states.purchase import ReplenishStates, SearchStates
 from utils.formatters import format_warehouse
 
 logger = logging.getLogger(__name__)
@@ -223,13 +223,14 @@ async def process_new_price(message: Message, state: FSMContext) -> None:
 
 
 # ===================================================
-# === ПОИСК (добавлено) ===
+# === ПОИСК (исправленный: через callback) ===
 # ===================================================
 
-@router.message(F.text == "🔍 Поиск")
-async def start_search(message: Message, state: FSMContext) -> None:
+@router.callback_query(F.data == "warehouse:search")
+async def start_search(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(SearchStates.waiting_for_query)
-    await message.answer(
+    await callback.answer()
+    await callback.message.answer(
         "🔍 Введите название товара для поиска:",
         reply_markup=cancel_inline_keyboard()
     )
@@ -273,7 +274,7 @@ async def process_search(message: Message, state: FSMContext) -> None:
 
 
 # ===================================================
-# === ОБРАБОТЧИК ОТМЕНЫ (если отсутствует в других файлах) ===
+# === ОБРАБОТЧИК ОТМЕНЫ ===
 # ===================================================
 
 @router.callback_query(F.data == "cancel:dialog")

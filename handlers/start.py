@@ -156,19 +156,27 @@ def _build_history_keyboard(page: int, total_pages: int, period: str) -> InlineK
     # Пагинация
     nav = []
     if page > 0:
-        nav.append(InlineKeyboardButton("⬅️", callback_data=f"history:page:{page-1}:{period}"))
-    nav.append(InlineKeyboardButton(f"{page+1}/{total_pages if total_pages > 0 else 1}", callback_data="ignore"))
+        nav.append(InlineKeyboardButton(
+            text="⬅️",
+            callback_data=f"history:page:{page-1}:{period}"
+        ))
+    nav.append(InlineKeyboardButton(
+        text=f"{page+1}/{total_pages if total_pages > 0 else 1}",
+        callback_data="ignore"
+    ))
     if page + 1 < total_pages:
-        nav.append(InlineKeyboardButton("➡️", callback_data=f"history:page:{page+1}:{period}"))
+        nav.append(InlineKeyboardButton(
+            text="➡️",
+            callback_data=f"history:page:{page+1}:{period}"
+        ))
     buttons.append(nav)
 
-    buttons.append([InlineKeyboardButton("🔙 Назад", callback_data="back:menu")])
+    buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="back:menu")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
 @router.message(F.text == "📋 История продаж")
 async def sales_history(message: Message) -> None:
-    # Первая страница, фильтр "all"
     await _show_history_page(message, page=0, period="all")
 
 
@@ -196,7 +204,6 @@ async def history_callback(callback: CallbackQuery) -> None:
             await callback.answer(msg, show_alert=True)
             return
         await callback.answer(msg)
-        # После отмены обновляем текущую страницу — для простоты перезагружаем первую
         await _show_history_page(callback.message, page=0, period="all", is_callback=True)
 
     elif action == "ignore":
@@ -228,7 +235,6 @@ async def _show_history_page(
                 await source.answer(text, reply_markup=keyboard)
             return
 
-        # Группируем по дате
         grouped = {}
         for sale in sales:
             date_key = sale["sold_at"].strftime("%Y-%m-%d")

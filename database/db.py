@@ -556,23 +556,24 @@ async def get_archived_items(user_id: int) -> list[dict[str, Any]]:
         return list(grouped.values())
     finally:
         await conn.close()
-        # ===================================================
-# === ИСТОРИЯ ПРОДАЖ (с фильтром и пагинацией) ===
+
+
+# ===================================================
+# === ИСТОРИЯ ПРОДАЖ (исправлено, без дублирования) ===
 # ===================================================
 
 async def get_sales_history(
     user_id: int,
     limit: int = 10,
     offset: int = 0,
-    period: str = "all",  # "day", "week", "month", "all"
+    period: str = "all",
 ) -> list[dict[str, Any]]:
     conn = await get_connection()
     try:
-        # Формируем условие по периоду
         where = "WHERE i.user_id = $1"
         params = [user_id]
         if period == "day":
-            where += " AND s.sold_at >= CURRENT_DATE"
+            where += " AND s.sold_at >= CURRENT_DATE - INTERVAL '1 day'"
         elif period == "week":
             where += " AND s.sold_at >= CURRENT_DATE - INTERVAL '7 days'"
         elif period == "month":
@@ -618,7 +619,7 @@ async def get_sales_history_count(user_id: int, period: str = "all") -> int:
         where = "WHERE i.user_id = $1"
         params = [user_id]
         if period == "day":
-            where += " AND s.sold_at >= CURRENT_DATE"
+            where += " AND s.sold_at >= CURRENT_DATE - INTERVAL '1 day'"
         elif period == "week":
             where += " AND s.sold_at >= CURRENT_DATE - INTERVAL '7 days'"
         elif period == "month":
@@ -643,7 +644,6 @@ async def get_sales_history_count(user_id: int, period: str = "all") -> int:
 async def undo_sale(user_id: int, sale_id: int) -> tuple[bool, str]:
     conn = await get_connection()
     try:
-        # Получаем информацию о продаже
         row = await conn.fetchrow(
             """
             SELECT s.item_id, s.size, i.user_id
@@ -661,127 +661,7 @@ async def undo_sale(user_id: int, sale_id: int) -> tuple[bool, str]:
         item_id = row["item_id"]
         size = row["size"]
 
-        # Удаляем запись о продаже
         await conn.execute("DELETE FROM sales WHERE id = $1", sale_id)
-
-        # Возвращаем товар на склад
-        await conn.execute(
-            "UPDATE stock SET quantity = quantity + 1 WHERE item_id = $1 AND size = $2",
-            item_id, size
-        )
-        await conn.execute("COMMIT")
-        return True, f"Продажа отменена, товар {size} возвращён на склад."
-    finally:
-        await conn.close()
-        # ===================================================
-# === ИСТОРИЯ ПРОДАЖ (с фильтром и пагинацией) ===
-# ===================================================
-
-async def get_sales_history(
-    user_id: int,
-    limit: int = 10,
-    offset: int = 0,
-    period: str = "all",  # "day", "week", "month", "all"
-) -> list[dict[str, Any]]:
-    conn = await get_connection()
-    try:
-        # Формируем условие по периоду
-        where = "WHERE i.user_id = $1"
-        params = [user_id]
-        if period == "day":
-            where += " AND s.sold_at >= CURRENT_DATE"
-        elif period == "week":
-            where += " AND s.sold_at >= CURRENT_DATE - INTERVAL '7 days'"
-        elif period == "month":
-            where += " AND s.sold_at >= CURRENT_DATE - INTERVAL '30 days'"
-
-        query = f"""
-            SELECT
-                s.id AS sale_id,
-                s.sold_at,
-                i.name,
-                s.size,
-                s.price,
-                s.purchase_price,
-                i.id AS item_id
-            FROM sales s
-            JOIN items i ON i.id = s.item_id
-            {where}
-            ORDER BY s.sold_at DESC
-            LIMIT ${len(params) + 1} OFFSET ${len(params) + 2}
-        """
-        params.extend([limit, offset])
-        rows = await conn.fetch(query, *params)
-
-        return [
-            {
-                "sale_id": row["sale_id"],
-                "sold_at": row["sold_at"],
-                "name": row["name"],
-                "size": row["size"],
-                "price": row["price"] or 0,
-                "purchase_price": row["purchase_price"] or 0,
-                "item_id": row["item_id"],
-            }
-            for row in rows
-        ]
-    finally:
-        await conn.close()
-
-
-async def get_sales_history_count(user_id: int, period: str = "all") -> int:
-    conn = await get_connection()
-    try:
-        where = "WHERE i.user_id = $1"
-        params = [user_id]
-        if period == "day":
-            where += " AND s.sold_at >= CURRENT_DATE"
-        elif period == "week":
-            where += " AND s.sold_at >= CURRENT_DATE - INTERVAL '7 days'"
-        elif period == "month":
-            where += " AND s.sold_at >= CURRENT_DATE - INTERVAL '30 days'"
-
-        query = f"""
-            SELECT COUNT(*) AS total
-            FROM sales s
-            JOIN items i ON i.id = s.item_id
-            {where}
-        """
-        row = await conn.fetchrow(query, *params)
-        return row["total"] if row else 0
-    finally:
-        await conn.close()
-
-
-# ===================================================
-# === ОТМЕНА ПРОДАЖИ ===
-# ===================================================
-
-async def undo_sale(user_id: int, sale_id: int) -> tuple[bool, str]:
-    conn = await get_connection()
-    try:
-        # Получаем информацию о продаже
-        row = await conn.fetchrow(
-            """
-            SELECT s.item_id, s.size, i.user_id
-            FROM sales s
-            JOIN items i ON i.id = s.item_id
-            WHERE s.id = $1
-            """,
-            sale_id
-        )
-        if not row:
-            return False, "Продажа не найдена."
-        if row["user_id"] != user_id:
-            return False, "Нет прав для отмены этой продажи."
-
-        item_id = row["item_id"]
-        size = row["size"]
-
-        # Удаляем запись о продаже
-        await conn.execute("DELETE FROM sales WHERE id = $1", sale_id)
-
-        # Возвращаем товар на склад
         await conn.execute(
             "UPDATE stock SET quantity = quantity + 1 WHERE item_id = $1 AND size = $2",
             item_id, size

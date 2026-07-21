@@ -132,7 +132,7 @@ async def unarchive_item_callback(callback: CallbackQuery) -> None:
 
 
 # ===================================================
-# === ИСТОРИЯ ПРОДАЖ ===
+# === ИСТОРИЯ ПРОДАЖ (исправлено) ===
 # ===================================================
 
 PERIODS = {
@@ -204,6 +204,7 @@ async def history_callback(callback: CallbackQuery) -> None:
             await callback.answer(msg, show_alert=True)
             return
         await callback.answer(msg)
+        # После отмены обновляем текущую страницу (возвращаемся на первую)
         await _show_history_page(callback.message, page=0, period="all", is_callback=True)
 
     elif action == "ignore":
@@ -235,6 +236,7 @@ async def _show_history_page(
                 await source.answer(text, reply_markup=keyboard)
             return
 
+        # Группировка по дням
         grouped = {}
         for sale in sales:
             date_key = sale["sold_at"].strftime("%Y-%m-%d")

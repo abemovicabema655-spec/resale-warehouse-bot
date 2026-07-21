@@ -45,7 +45,8 @@ async def init_db() -> None:
                 name TEXT NOT NULL,
                 category TEXT DEFAULT 'Общее',
                 purchase_price REAL,
-                sale_price REAL
+                sale_price REAL,
+                archived BOOLEAN DEFAULT FALSE
             );
 
             CREATE TABLE IF NOT EXISTS stock (
@@ -69,6 +70,7 @@ async def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_stock_item_id ON stock(item_id);
             CREATE INDEX IF NOT EXISTS idx_sales_item_id ON sales(item_id);
             CREATE INDEX IF NOT EXISTS idx_items_name ON items(name);
+            CREATE INDEX IF NOT EXISTS idx_items_archived ON items(archived);
         """)
         await conn.execute("COMMIT")
         logger.info("✅ Таблицы созданы/проверены")
@@ -180,7 +182,7 @@ async def get_warehouse_items(user_id: int) -> list[dict[str, Any]]:
                 s.quantity
             FROM items i
             INNER JOIN stock s ON s.item_id = i.id
-            WHERE i.user_id = $1
+            WHERE i.user_id = $1 AND i.archived = FALSE
             ORDER BY i.name, s.size
             """,
             user_id
@@ -432,5 +434,50 @@ async def update_price(user_id: int, item_id: int, new_sale_price: float) -> tup
             return False, "Товар не найден или доступ запрещён."
         purchase_price = row["purchase_price"] or 0
         return await update_item_prices(user_id, item_id, purchase_price, new_sale_price)
+    finally:
+        await conn.close()
+
+
+# ===================================================
+# === ПОИСК ПО СКЛАДУ ===
+# ===================================================
+
+async def search_warehouse_items(user_id: int, query: str) -> list[dict[str, Any]]:
+    conn = await get_connection()
+    try:
+        rows = await conn.fetch(
+            """
+            SELECT
+                i.id AS item_id,
+                i.name,
+                i.purchase_price,
+                i.sale_price,
+                s.id AS stock_id,
+                s.size,
+                s.quantity
+            FROM items i
+            INNER JOIN stock s ON s.item_id = i.id
+            WHERE i.user_id = $1 AND i.name ILIKE $2 AND i.archived = FALSE
+            ORDER BY i.name, s.size
+            """,
+            user_id, f"%{query}%"
+        )
+        grouped = {}
+        for row in rows:
+            item_id = row["item_id"]
+            if item_id not in grouped:
+                grouped[item_id] = {
+                    "item_id": item_id,
+                    "name": row["name"],
+                    "purchase_price": row["purchase_price"] or 0,
+                    "sale_price": row["sale_price"] or 0,
+                    "sizes": []
+                }
+            grouped[item_id]["sizes"].append({
+                "stock_id": row["stock_id"],
+                "size": row["size"],
+                "quantity": row["quantity"] or 0
+            })
+        return list(grouped.values())
     finally:
         await conn.close()

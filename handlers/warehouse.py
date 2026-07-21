@@ -11,6 +11,7 @@ from database.db import (
     sell_item,
     delete_size,
     update_price,
+    search_warehouse_items,          # <-- добавлено
 )
 from keyboards.menus import (
     back_inline_keyboard,
@@ -18,11 +19,12 @@ from keyboards.menus import (
     main_menu_keyboard,
     warehouse_keyboard,
 )
-from states.purchase import ReplenishStates
+from states.purchase import ReplenishStates, SearchStates   # <-- добавлено
 from utils.formatters import format_warehouse
 
 logger = logging.getLogger(__name__)
 router = Router()
+
 
 class EditPriceStates(StatesGroup):
     waiting_for_new_price = State()
@@ -218,3 +220,68 @@ async def process_new_price(message: Message, state: FSMContext) -> None:
             "⚠️ Не удалось обновить цену.",
             reply_markup=main_menu_keyboard(),
         )
+
+
+# ===================================================
+# === ПОИСК (добавлено) ===
+# ===================================================
+
+@router.message(F.text == "🔍 Поиск")
+async def start_search(message: Message, state: FSMContext) -> None:
+    await state.set_state(SearchStates.waiting_for_query)
+    await message.answer(
+        "🔍 Введите название товара для поиска:",
+        reply_markup=cancel_inline_keyboard()
+    )
+
+
+@router.message(SearchStates.waiting_for_query)
+async def process_search(message: Message, state: FSMContext) -> None:
+    try:
+        user_id = message.from_user.id
+        query = message.text.strip()
+        if not query:
+            await message.answer(
+                "⚠️ Введите название.",
+                reply_markup=cancel_inline_keyboard()
+            )
+            return
+
+        items = await search_warehouse_items(user_id, query)
+        if not items:
+            await message.answer(
+                "🔍 Ничего не найдено.",
+                reply_markup=back_inline_keyboard()
+            )
+            await state.clear()
+            return
+
+        text, keyboard = await _render_warehouse_message(items)
+        await message.answer(
+            text,
+            reply_markup=keyboard,
+            parse_mode="HTML"
+        )
+        await state.clear()
+    except Exception as e:
+        logger.exception("Ошибка поиска: %s", e)
+        await message.answer(
+            "⚠️ Не удалось выполнить поиск.",
+            reply_markup=back_inline_keyboard()
+        )
+        await state.clear()
+
+
+# ===================================================
+# === ОБРАБОТЧИК ОТМЕНЫ (если отсутствует в других файлах) ===
+# ===================================================
+
+@router.callback_query(F.data == "cancel:dialog")
+async def cancel_dialog(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    await callback.answer("Действие отменено")
+    await callback.message.delete()
+    await callback.message.answer(
+        "❌ Отменено.",
+        reply_markup=main_menu_keyboard()
+    )

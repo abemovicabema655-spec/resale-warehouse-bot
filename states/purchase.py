@@ -20,3 +20,6 @@ class SearchStates(StatesGroup):
 class EditPriceStates(StatesGroup):
     purchase_price = State()
     sale_price = State()
+
+class SearchStates(StatesGroup):
+    waiting_for_query = State()

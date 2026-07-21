@@ -2,11 +2,25 @@ from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 
-from database.db import register_user, get_dashboard_stats, get_archived_items, unarchive_item
+from database.db import (
+    register_user,
+    get_dashboard_stats,
+    get_archived_items,
+    unarchive_item,
+    get_sales_history,
+    get_sales_history_count,
+    undo_sale,
+)
 from keyboards.menus import main_menu_keyboard, back_inline_keyboard
 from utils.formatters import format_warehouse
+import logging
 
+logger = logging.getLogger(__name__)
 router = Router()
+
+# ===================================================
+# === СТАРТ ===
+# ===================================================
 
 @router.message(Command("start"))
 async def start(message: Message) -> None:
@@ -115,3 +129,156 @@ async def unarchive_item_callback(callback: CallbackQuery) -> None:
     except Exception as exc:
         logger.exception("Ошибка восстановления из архива: %s", exc)
         await callback.answer("⚠️ Не удалось восстановить товар", show_alert=True)
+
+
+# ===================================================
+# === ИСТОРИЯ ПРОДАЖ ===
+# ===================================================
+
+PERIODS = {
+    "day": "Сегодня",
+    "week": "Неделя",
+    "month": "Месяц",
+    "all": "Всё время",
+}
+
+def _build_history_keyboard(page: int, total_pages: int, period: str) -> InlineKeyboardMarkup:
+    buttons = []
+    # Кнопки фильтров
+    row = []
+    for key, label in PERIODS.items():
+        row.append(InlineKeyboardButton(
+            text=f"{label} ✅" if key == period else label,
+            callback_data=f"history:filter:{key}"
+        ))
+    buttons.append(row)
+
+    # Пагинация
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("⬅️", callback_data=f"history:page:{page-1}:{period}"))
+    nav.append(InlineKeyboardButton(f"{page+1}/{total_pages if total_pages > 0 else 1}", callback_data="ignore"))
+    if page + 1 < total_pages:
+        nav.append(InlineKeyboardButton("➡️", callback_data=f"history:page:{page+1}:{period}"))
+    buttons.append(nav)
+
+    buttons.append([InlineKeyboardButton("🔙 Назад", callback_data="back:menu")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+@router.message(F.text == "📋 История продаж")
+async def sales_history(message: Message) -> None:
+    # Первая страница, фильтр "all"
+    await _show_history_page(message, page=0, period="all")
+
+
+@router.callback_query(F.data.startswith("history:"))
+async def history_callback(callback: CallbackQuery) -> None:
+    parts = callback.data.split(":")
+    action = parts[1]
+
+    if action == "filter":
+        period = parts[2]
+        await _show_history_page(callback.message, page=0, period=period, is_callback=True)
+        await callback.answer()
+
+    elif action == "page":
+        page = int(parts[2])
+        period = parts[3]
+        await _show_history_page(callback.message, page=page, period=period, is_callback=True)
+        await callback.answer()
+
+    elif action == "undo":
+        sale_id = int(parts[2])
+        user_id = callback.from_user.id
+        success, msg = await undo_sale(user_id, sale_id)
+        if not success:
+            await callback.answer(msg, show_alert=True)
+            return
+        await callback.answer(msg)
+        # После отмены обновляем текущую страницу — для простоты перезагружаем первую
+        await _show_history_page(callback.message, page=0, period="all", is_callback=True)
+
+    elif action == "ignore":
+        await callback.answer()
+
+
+async def _show_history_page(
+    source: Message | CallbackQuery,
+    page: int,
+    period: str,
+    is_callback: bool = False,
+):
+    user_id = source.from_user.id if isinstance(source, Message) else source.from_user.id
+
+    try:
+        limit = 10
+        offset = page * limit
+        total = await get_sales_history_count(user_id, period)
+        total_pages = (total + limit - 1) // limit if total > 0 else 1
+
+        sales = await get_sales_history(user_id, limit, offset, period)
+
+        if not sales:
+            text = "📋 Продаж за выбранный период нет."
+            keyboard = _build_history_keyboard(page, total_pages, period)
+            if is_callback:
+                await source.edit_text(text, reply_markup=keyboard)
+            else:
+                await source.answer(text, reply_markup=keyboard)
+            return
+
+        # Группируем по дате
+        grouped = {}
+        for sale in sales:
+            date_key = sale["sold_at"].strftime("%Y-%m-%d")
+            if date_key not in grouped:
+                grouped[date_key] = {
+                    "date": sale["sold_at"].strftime("%d %B %Y"),
+                    "sales": []
+                }
+            grouped[date_key]["sales"].append(sale)
+
+        text = "📋 *История продаж*\n"
+        text += f"Фильтр: {PERIODS.get(period, 'Всё время')}\n\n"
+
+        total_revenue = 0
+        total_profit = 0
+        count = 0
+
+        for date_key, group in grouped.items():
+            text += f"📅 *{group['date']}*\n"
+            for sale in group["sales"]:
+                time_str = sale["sold_at"].strftime("%H:%M")
+                name = sale["name"]
+                size = sale["size"]
+                price = sale["price"]
+                purchase_price = sale["purchase_price"]
+                profit = price - purchase_price
+                total_revenue += price
+                total_profit += profit
+                count += 1
+                text += (
+                    f"   {time_str} — {name} ({size}) — "
+                    f"💰 {price:,.2f} ₽ (прибыль +{profit:,.2f} ₽)\n"
+                )
+
+        text += f"\n📊 *Итого за показанный период:*\n"
+        text += f"   Выручка: {total_revenue:,.2f} ₽\n"
+        text += f"   Прибыль: {total_profit:,.2f} ₽\n"
+        text += f"   Продаж: {count}"
+
+        keyboard = _build_history_keyboard(page, total_pages, period)
+
+        if is_callback:
+            await source.edit_text(text, reply_markup=keyboard, parse_mode="Markdown")
+        else:
+            await source.answer(text, reply_markup=keyboard, parse_mode="Markdown")
+
+    except Exception as exc:
+        logger.exception("Ошибка загрузки истории продаж: %s", exc)
+        error_text = "⚠️ Не удалось загрузить историю продаж."
+        if is_callback:
+            await source.edit_text(error_text, reply_markup=back_inline_keyboard())
+        else:
+            await source.answer(error_text, reply_markup=back_inline_keyboard())

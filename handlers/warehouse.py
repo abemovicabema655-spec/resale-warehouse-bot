@@ -12,6 +12,7 @@ from database.db import (
     delete_size,
     update_price,
     search_warehouse_items,
+    archive_item,          # <-- добавлен импорт
 )
 from keyboards.menus import (
     back_inline_keyboard,
@@ -223,7 +224,7 @@ async def process_new_price(message: Message, state: FSMContext) -> None:
 
 
 # ===================================================
-# === ПОИСК (исправленный: через callback) ===
+# === ПОИСК ===
 # ===================================================
 
 @router.callback_query(F.data == "warehouse:search")
@@ -271,6 +272,31 @@ async def process_search(message: Message, state: FSMContext) -> None:
             reply_markup=back_inline_keyboard()
         )
         await state.clear()
+
+
+# ===================================================
+# === АРХИВИРОВАТЬ ТОВАР ===
+# ===================================================
+
+@router.callback_query(F.data.startswith("archive:"))
+async def archive_item_callback(callback: CallbackQuery) -> None:
+    try:
+        user_id = callback.from_user.id
+        _, item_id_str = callback.data.split(":", 1)
+        item_id = int(item_id_str)
+
+        success, msg = await archive_item(user_id, item_id)
+        if not success:
+            await callback.answer(msg, show_alert=True)
+            return
+
+        items = await get_warehouse_items(user_id)
+        text, keyboard = await _render_warehouse_message(items)
+        await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+        await callback.answer(f"✅ {msg}")
+    except Exception as exc:
+        logger.exception("Ошибка архивации: %s", exc)
+        await callback.answer("⚠️ Не удалось переместить товар в архив", show_alert=True)
 
 
 # ===================================================

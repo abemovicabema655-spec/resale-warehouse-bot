@@ -4,6 +4,7 @@ MAIN_MENU_BUTTONS = [
     ["📦 Главный экран", "📦 Склад"],
     ["💰 Финансы", "➕ Новая закупка"],
     ["🚚 Поставки", "📈 Статистика"],
+    ["📂 Архив"],  # <-- добавлена кнопка архива
 ]
 
 
@@ -64,7 +65,7 @@ def warehouse_keyboard(
                     callback_data=f"delete:{item_id}:{size}",
                 ),
             ])
-            # Пополнение в отдельном ряду (чтобы не перегружать)
+            # Пополнение в отдельном ряду
             buttons.append([
                 InlineKeyboardButton(
                     text=f"➕ Пополнить {size}",
@@ -77,6 +78,14 @@ def warehouse_keyboard(
             InlineKeyboardButton(
                 text=f"✏️ Изменить цену — {short_name}",
                 callback_data=f"edit_price:{item_id}",
+            )
+        ])
+
+        # Кнопка "В архив" для всего товара
+        buttons.append([
+            InlineKeyboardButton(
+                text=f"🗄️ В архив",
+                callback_data=f"archive:{item_id}",
             )
         ])
 

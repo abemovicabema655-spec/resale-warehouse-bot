@@ -1,8 +1,10 @@
 from aiogram import F, Router
 from aiogram.filters import Command
-from aiogram.types import Message, CallbackQuery
-from database.db import register_user, get_dashboard_stats
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+
+from database.db import register_user, get_dashboard_stats, get_archived_items, unarchive_item
 from keyboards.menus import main_menu_keyboard, back_inline_keyboard
+from utils.formatters import format_warehouse
 
 router = Router()
 
@@ -22,6 +24,7 @@ async def start(message: Message) -> None:
         reply_markup=main_menu_keyboard(),
     )
 
+
 @router.message(F.text == "📦 Главный экран")
 async def main_screen(message: Message) -> None:
     try:
@@ -38,8 +41,77 @@ async def main_screen(message: Message) -> None:
     except Exception as e:
         await message.answer(f"⚠️ Ошибка: {e}")
 
+
 @router.callback_query(F.data == "back:menu")
 async def back_to_menu(callback: CallbackQuery):
     await callback.message.delete()
     await callback.message.answer("Главное меню:", reply_markup=main_menu_keyboard())
     await callback.answer()
+
+
+# ===================================================
+# === АРХИВ ===
+# ===================================================
+
+@router.message(F.text == "📂 Архив")
+async def show_archive(message: Message) -> None:
+    try:
+        user_id = message.from_user.id
+        items = await get_archived_items(user_id)
+        if not items:
+            await message.answer(
+                "📂 Архив пуст.",
+                reply_markup=back_inline_keyboard()
+            )
+            return
+
+        text = format_warehouse(items)
+        keyboard = _build_archive_keyboard(items)
+        await message.answer(text, reply_markup=keyboard, parse_mode="HTML")
+    except Exception as exc:
+        logger.exception("Ошибка загрузки архива: %s", exc)
+        await message.answer("⚠️ Не удалось загрузить архив.")
+
+
+def _build_archive_keyboard(items: list[dict]) -> InlineKeyboardMarkup:
+    buttons = []
+    for item in items:
+        item_id = item["item_id"]
+        buttons.append([
+            InlineKeyboardButton(
+                text=f"↩️ Восстановить {item['name']}",
+                callback_data=f"unarchive:{item_id}"
+            )
+        ])
+    buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="back:menu")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+@router.callback_query(F.data.startswith("unarchive:"))
+async def unarchive_item_callback(callback: CallbackQuery) -> None:
+    try:
+        user_id = callback.from_user.id
+        _, item_id_str = callback.data.split(":", 1)
+        item_id = int(item_id_str)
+
+        success, msg = await unarchive_item(user_id, item_id)
+        if not success:
+            await callback.answer(msg, show_alert=True)
+            return
+
+        items = await get_archived_items(user_id)
+        if not items:
+            await callback.message.edit_text(
+                "📂 Архив пуст.",
+                reply_markup=back_inline_keyboard()
+            )
+            await callback.answer(f"✅ {msg}")
+            return
+
+        text = format_warehouse(items)
+        keyboard = _build_archive_keyboard(items)
+        await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+        await callback.answer(f"✅ {msg}")
+    except Exception as exc:
+        logger.exception("Ошибка восстановления из архива: %s", exc)
+        await callback.answer("⚠️ Не удалось восстановить товар", show_alert=True)

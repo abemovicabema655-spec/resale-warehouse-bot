@@ -13,7 +13,8 @@ from database.db import (
     update_price,
     search_warehouse_items,
     archive_item,
-    check_low_stock,          # <-- импорт добавлен сюда
+    check_low_stock,
+    set_threshold,          # <-- добавлен импорт
 )
 from keyboards.menus import (
     back_inline_keyboard,
@@ -21,7 +22,7 @@ from keyboards.menus import (
     main_menu_keyboard,
     warehouse_keyboard,
 )
-from states.purchase import ReplenishStates, SearchStates
+from states.purchase import ReplenishStates, SearchStates, ThresholdStates
 from utils.formatters import format_warehouse
 
 logger = logging.getLogger(__name__)
@@ -307,6 +308,71 @@ async def archive_item_callback(callback: CallbackQuery) -> None:
     except Exception as exc:
         logger.exception("Ошибка архивации: %s", exc)
         await callback.answer("⚠️ Не удалось переместить товар в архив", show_alert=True)
+
+
+# ===================================================
+# === НАСТРОЙКА ПОРОГА ===
+# ===================================================
+
+@router.callback_query(F.data.startswith("threshold:"))
+async def start_threshold(callback: CallbackQuery, state: FSMContext) -> None:
+    try:
+        _, item_id_str = callback.data.split(":", 1)
+        item_id = int(item_id_str)
+        await state.update_data(item_id=item_id)
+        await state.set_state(ThresholdStates.waiting_for_value)
+        await callback.answer()
+        await callback.message.answer(
+            "🔔 Введите новый порог для этого товара (целое число):\n"
+            "Если остаток станет меньше или равен этому числу, вы получите уведомление.",
+            reply_markup=cancel_inline_keyboard()
+        )
+    except Exception as exc:
+        logger.exception("Ошибка начала настройки порога: %s", exc)
+        await callback.answer("⚠️ Ошибка", show_alert=True)
+
+
+@router.message(ThresholdStates.waiting_for_value)
+async def process_threshold(message: Message, state: FSMContext) -> None:
+    try:
+        user_id = message.from_user.id
+        text = message.text.strip()
+        if not text.isdigit() or int(text) < 0:
+            await message.answer(
+                "⚠️ Введите целое неотрицательное число (например, 3).",
+                reply_markup=cancel_inline_keyboard()
+            )
+            return
+        threshold = int(text)
+        data = await state.get_data()
+        item_id = data.get("item_id")
+        if not item_id:
+            await state.clear()
+            await message.answer(
+                "⚠️ Сессия устарела. Откройте склад заново.",
+                reply_markup=main_menu_keyboard()
+            )
+            return
+        success, msg = await set_threshold(user_id, item_id, threshold)
+        await state.clear()
+        if not success:
+            await message.answer(f"⚠️ {msg}", reply_markup=main_menu_keyboard())
+            return
+        # Обновляем склад
+        items = await get_warehouse_items(user_id)
+        text, keyboard = await _render_warehouse_message(items)
+        await message.answer(
+            f"✅ {msg}\n\n{text}",
+            reply_markup=keyboard,
+            parse_mode="HTML"
+        )
+    except Exception as exc:
+        logger.exception("Ошибка установки порога: %s", exc)
+        await state.clear()
+        await message.answer(
+            "⚠️ Не удалось установить порог.",
+            reply_markup=main_menu_keyboard()
+        )
 
 
 # ===================================================

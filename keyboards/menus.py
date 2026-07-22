@@ -1,12 +1,10 @@
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
 
 MAIN_MENU_BUTTONS = [
-    ["📦 Главный экран", "📦 Склад"],
-    ["💰 Финансы", "➕ Новая закупка"],
-    ["🚚 Поставки", "📈 Статистика"],
+    ["📦 Склад", "💰 Финансы"],
+    ["➕ Новая закупка", "📈 Статистика"],
     ["📋 История продаж", "📂 Архив"],
-    ["🔔 Умные уведомления", "🗑️ Обнулить всё"],
-    ["ℹ️ О боте"],  # <-- добавлена новая кнопка
+    ["⚙️ Настройки"],
 ]
 
 
@@ -56,7 +54,6 @@ def warehouse_keyboard(
 
         for size_info in item["sizes"]:
             size = size_info["size"]
-            # Группируем кнопки для одного размера в один ряд
             buttons.append([
                 InlineKeyboardButton(
                     text=f"✅ Продано {size}",
@@ -67,7 +64,6 @@ def warehouse_keyboard(
                     callback_data=f"delete:{item_id}:{size}",
                 ),
             ])
-            # Пополнение в отдельном ряду
             buttons.append([
                 InlineKeyboardButton(
                     text=f"➕ Пополнить {size}",
@@ -75,7 +71,6 @@ def warehouse_keyboard(
                 ),
             ])
 
-        # Кнопка изменения цены для всего товара
         buttons.append([
             InlineKeyboardButton(
                 text=f"✏️ Изменить цену — {short_name}",
@@ -83,7 +78,6 @@ def warehouse_keyboard(
             )
         ])
 
-        # Кнопка "В архив" для всего товара
         buttons.append([
             InlineKeyboardButton(
                 text=f"🗄️ В архив",
@@ -91,7 +85,13 @@ def warehouse_keyboard(
             )
         ])
 
-    # Кнопки поиска и назад
+        buttons.append([
+            InlineKeyboardButton(
+                text=f"🔔 Порог",
+                callback_data=f"threshold:{item_id}",
+            )
+        ])
+
     buttons.append([InlineKeyboardButton(text="🔍 Поиск", callback_data="warehouse:search")])
     if search_query:
         buttons.append(
